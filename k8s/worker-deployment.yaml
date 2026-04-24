@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthclaw-worker
+  namespace: healthclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: healthclaw-worker
+  template:
+    metadata:
+      labels:
+        app: healthclaw-worker
+    spec:
+      containers:
+        - name: worker
+          image: healthclaw-api:latest
+          imagePullPolicy: IfNotPresent
+          command: ["arq", "healthclaw.workers.queue.WorkerSettings"]
+          envFrom:
+            - secretRef:
+                name: healthclaw-secrets
