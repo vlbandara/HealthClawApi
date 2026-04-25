@@ -164,7 +164,7 @@ async def _dev_chat() -> HTMLResponse:
       }}
       add(
         "system",
-        "Commands work here: /memory, /settings, /pause, /resume."
+        "Commands work here: /memory, /settings, /pause, /resume, /rituals, /streak, /heartbeat."
       );
     }} catch (error) {{
       add("system", "Could not load recent history: " + error.message);
@@ -334,6 +334,7 @@ def create_app() -> FastAPI:
                     ritual.enabled = enabled
                 await session.commit()
                 return {"updated": len(rituals), "enabled": enabled}
+
     return app
 
 

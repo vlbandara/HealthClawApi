@@ -242,6 +242,8 @@ def system_prompt(
     lifecycle_stage: str = "onboarding",
     memory_documents: dict[str, str] | None = None,
     trust_level: float | None = None,
+    streaks: list[dict[str, object]] | None = None,
+    safety_category: str | None = None,
 ) -> str:
     preference_overlay = user_preference_prompt(soul_preferences)
     values = {
@@ -249,6 +251,7 @@ def system_prompt(
         "timezone": timezone,
         "lifecycle_stage": lifecycle_stage,
     }
+    trust_band = trust_band_label(trust_level)
     modules = [
         _render_template(_load_prompt_module(module), values).strip()
         for module in PROMPT_MODULES
@@ -275,6 +278,9 @@ def system_prompt(
         modules.append(document_sections)
     modules.append(legacy_contract)
     modules.append(trust_tone_block(trust_level))
+    streak_module = streaks_block(streaks or [], trust_band, safety_category or "unknown")
+    if streak_module:
+        modules.append(streak_module)
     return "\n\n---\n\n".join(modules)
 
 
@@ -320,3 +326,31 @@ def trust_tone_block(trust_level: float | None) -> str:
 
 def _trust_tone_band(trust_level: float | None) -> str:
     return trust_tone_block(trust_level)
+
+
+def streaks_block(streaks: list[dict[str, object]], trust_band: str, safety_category: str) -> str:
+    if trust_band not in {"medium", "high"}:
+        return ""
+    if safety_category == "crisis":
+        return ""
+    notable = [
+        s
+        for s in (streaks or [])
+        if isinstance(s, dict) and int(s.get("streak_count") or 0) >= 3
+    ]
+    if not notable:
+        return ""
+
+    lines = ["# Active rituals"]
+    for item in notable:
+        kind = str(item.get("kind") or "ritual")
+        count = int(item.get("streak_count") or 0)
+        last = str(item.get("streak_last_date") or "unknown")
+        lines.append(f"- {kind}: {count}-day streak (last: {last})")
+    lines.append("")
+    lines.append(
+        "Guidance: reference the streak only when it adds continuity. Never demand "
+        "the user maintain it, never frame a lapse as failure. Skip on crisis or "
+        "quiet-hours turns."
+    )
+    return "\n".join(lines)

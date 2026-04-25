@@ -61,6 +61,7 @@ class DreamService:
         cursor = await self._get_or_create_cursor(user.id)
         messages = await self._recent_messages(user.id, cursor)
         if not messages:
+            logger.info("Dream skipped for user %s: no new messages", user.id)
             return {"status": "skipped", "applied": 0, "rejected": 0}
 
         run = DreamRun(
@@ -97,7 +98,9 @@ class DreamService:
             run.status = "completed"
             run.completed_at = utc_now()
             await self.session.flush()
-            return {"status": "completed", "applied": applied, "rejected": rejected}
+            result = {"status": "completed", "applied": applied, "rejected": rejected}
+            logger.info("Dream completed for user %s: %s", user.id, result)
+            return result
         except Exception as exc:
             logger.warning("Dream run failed for user %s: %s", user.id, exc)
             run.status = "failed"

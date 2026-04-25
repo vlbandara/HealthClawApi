@@ -65,6 +65,11 @@ class ConsolidatorService:
 
         if len(messages) < BATCH_SIZE:
             # Not enough new content to consolidate yet
+            logger.info(
+                "Consolidator skipped for user %s: %s messages since cursor",
+                user_id,
+                len(messages),
+            )
             return 0
 
         episodes_created = 0
@@ -85,6 +90,12 @@ class ConsolidatorService:
             self.session.add(cursor)
             await self.session.flush()
 
+        logger.info(
+            "Consolidator completed for user %s: episodes=%s, processed_messages=%s",
+            user_id,
+            episodes_created,
+            len(messages),
+        )
         return episodes_created
 
     async def _consolidate_batch(self, user_id: str, messages: list[Message]) -> int:

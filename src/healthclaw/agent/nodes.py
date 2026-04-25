@@ -75,9 +75,13 @@ async def generate_response(state: AgentState) -> AgentState:
         soul_preferences=state.get("soul_preferences", {}),
         bridges=bridges,
         open_loops=state.get("open_loops", []),
+        streaks=state.get("streaks", []),
         recent_messages=state.get("recent_messages", []),
         memory_documents=state.get("memory_documents", {}),
         user_context=state.get("user", {}),
+        safety_category=state.get("safety", {}).get("category"),
+        thread_summary=state.get("thread_summary"),
+        relationship_signals=state.get("relationship_signals"),
     )
     state["response"] = response
     state["trace_metadata"] = {**state.get("trace_metadata", {}), "generation": metadata}

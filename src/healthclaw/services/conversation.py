@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from healthclaw.agent.context_harness import ContextHarness
 from healthclaw.agent.graph import agent_graph
+from healthclaw.agent.time_context import build_time_context
 from healthclaw.core.config import get_settings
 from healthclaw.core.tracing import new_trace_id, redacted_payload
 from healthclaw.db.models import (
@@ -29,12 +33,15 @@ from healthclaw.engagement.metrics import (
 )
 from healthclaw.heartbeat.rituals import RitualService
 from healthclaw.heartbeat.service import HeartbeatService
+from healthclaw.heartbeat.streaks import RitualStreakService
 from healthclaw.memory.documents import MarkdownMemoryService
 from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.events import ConversationEvent
 from healthclaw.schemas.memory import MemoryMutation
 from healthclaw.schemas.messages import MessageResponse
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationService:
@@ -188,45 +195,116 @@ class ConversationService:
         ):
             return command_response
 
+        harness_mode = self._context_harness_mode()
         memory_service = MemoryService(self.session, self._embedding_client())
-        memories = await memory_service.retrieve_relevant_memories(
+        candidate_memories = await memory_service.retrieve_relevant_memories(
             user.id,
             event.content,
-            limit=self.settings.memory_retrieval_limit,
+            limit=(
+                self.settings.memory_retrieval_limit
+                if harness_mode == "legacy"
+                else max(
+                    self.settings.memory_retrieval_limit,
+                    self.settings.context_harness_candidate_memory_limit,
+                )
+            ),
         )
+        memory_candidates_payload = [self._memory_payload(memory) for memory in candidate_memories]
+        legacy_memories = memory_candidates_payload[: self.settings.memory_retrieval_limit]
         soul_preferences = await self._soul_preferences_payload(user.id)
         engagement = await self._engagement_state(user.id)
         engagement_context = self._engagement_payload(engagement)
         open_loops = await self._open_loops_payload(user.id)
+        streaks = await RitualStreakService(self.session).streaks_payload(user.id)
         recent_messages = await self._recent_messages_payload(
             thread.id,
             exclude_message_id=user_message.id,
             limit=self.settings.recent_message_context_limit,
         )
         memory_documents = await MarkdownMemoryService(self.session).documents_for_prompt(user)
+        user_context = {
+            "id": user.id,
+            "timezone": user.timezone,
+            "quiet_start": user.quiet_start,
+            "quiet_end": user.quiet_end,
+            "proactive_enabled": user.proactive_enabled,
+            **engagement_context,
+        }
+        prompt_context = None
+        if harness_mode != "legacy":
+            prompt_context = ContextHarness(self.settings).build(
+                user_content=event.content,
+                time_context=build_time_context(user, last_interaction_at=last_interaction_at),
+                memories=memory_candidates_payload,
+                recent_messages=recent_messages,
+                open_loops=open_loops,
+                memory_documents=memory_documents,
+                user_context=user_context,
+                thread_summary=thread.summary or "",
+                mode=harness_mode,
+            )
+
+        selected_memories = (
+            prompt_context.memories
+            if harness_mode == "active" and prompt_context
+            else legacy_memories
+        )
+        selected_open_loops = (
+            prompt_context.open_loops if harness_mode == "active" and prompt_context else open_loops
+        )
+        selected_recent_messages = (
+            prompt_context.recent_messages
+            if harness_mode == "active" and prompt_context
+            else recent_messages
+        )
+        selected_memory_documents = (
+            prompt_context.memory_documents
+            if harness_mode == "active" and prompt_context
+            else memory_documents
+        )
+        selected_thread_summary = (
+            prompt_context.thread_summary if harness_mode == "active" and prompt_context else ""
+        )
+        selected_relationship_signals = (
+            prompt_context.relationship_signals
+            if harness_mode == "active" and prompt_context
+            else []
+        )
+        context_harness_trace = self._context_harness_trace_payload(
+            mode=harness_mode,
+            legacy_memories=legacy_memories,
+            selected_memories=selected_memories,
+            legacy_open_loops=open_loops,
+            selected_open_loops=selected_open_loops,
+            legacy_recent_messages=recent_messages,
+            selected_recent_messages=selected_recent_messages,
+            legacy_memory_documents=memory_documents,
+            selected_memory_documents=selected_memory_documents,
+            selected_thread_summary=selected_thread_summary,
+            selected_relationship_signals=selected_relationship_signals,
+            prompt_context=prompt_context,
+            memory_candidates=memory_candidates_payload,
+        )
         state = await agent_graph.ainvoke(
             {
-                "user": {
-                "id": user.id,
-                "timezone": user.timezone,
-                "quiet_start": user.quiet_start,
-                "quiet_end": user.quiet_end,
-                "proactive_enabled": user.proactive_enabled,
-                **engagement_context,
-            },
-            "user_content": event.content,
-            "channel": event.channel,
-            "user_message": {"id": user_message.id},
-                "memories": [self._memory_payload(memory) for memory in memories],
+                "user": user_context,
+                "user_content": event.content,
+                "channel": event.channel,
+                "user_message": {"id": user_message.id},
+                "memories": selected_memories,
                 "soul_preferences": soul_preferences,
-                "open_loops": open_loops,
-                "recent_messages": recent_messages,
-                "memory_documents": memory_documents,
+                "open_loops": selected_open_loops,
+                "streaks": streaks,
+                "recent_messages": selected_recent_messages,
+                "memory_documents": selected_memory_documents,
+                "thread_summary": selected_thread_summary,
+                "relationship_signals": selected_relationship_signals,
                 "trace_metadata": {
                     "trace_id": trace_id,
                     "thread_id": thread.id,
                     "last_interaction_at": last_interaction_at,
                     "content_type": event.content_type,
+                    "context_harness": context_harness_trace,
                 },
             },
         )
@@ -247,6 +325,12 @@ class ConversationService:
         self.session.add(assistant_message)
         await self.session.flush()
         thread.last_message_at = utc_now()
+        meaningful_exchange = is_meaningful_exchange(
+            event.content,
+            content_type=event.content_type,
+            is_command=is_command,
+        )
+        streak_updates: list[dict[str, object]] = []
         await self._update_engagement_state(
             user.id,
             user_message.created_at,
@@ -254,12 +338,19 @@ class ConversationService:
             content=event.content,
             voice_note=event.content_type == "voice_transcript",
             long_lapse=bool(state["time_context"].get("long_lapse")),
-            meaningful_exchange=is_meaningful_exchange(
-                event.content,
-                content_type=event.content_type,
-                is_command=is_command,
-            ),
+            meaningful_exchange=meaningful_exchange,
         )
+        if meaningful_exchange:
+            advanced_streaks = await RitualStreakService(self.session).record_meaningful_exchange(
+                user,
+                user_message.created_at,
+                state["safety"]["category"],
+            )
+            streak_updates = self._streak_progress_payload(advanced_streaks)
+            if streak_updates:
+                logger.info("Advanced ritual streaks for %s: %s", user.id, streak_updates)
+        state.setdefault("trace_metadata", {})["streak_updates"] = streak_updates
+        assistant_message.metadata_["generation"]["streak_updates"] = streak_updates
 
         memory_updates: list[dict] = []
         heartbeat_service = HeartbeatService(self.session)
@@ -389,6 +480,10 @@ class ConversationService:
             response = await memory_service.summarize_user_memory(user.id)
         elif command == "/rituals":
             response = await self._handle_rituals_command(user, argument)
+        elif command == "/streak":
+            response = await self._handle_streak_command(user)
+        elif command == "/heartbeat":
+            response = await self._handle_heartbeat_command(user, argument)
         elif command == "/soul":
             response = await self._handle_soul_command(user, argument)
         elif command == "/pause":
@@ -425,7 +520,7 @@ class ConversationService:
         else:
             response = (
                 "Available commands: /start, /settings, /memory, /pause, /resume, "
-                "/rituals, /soul, /forget, /export, /delete."
+                "/rituals, /streak, /heartbeat, /soul, /forget, /export, /delete."
             )
         assistant_message = Message(
             thread_id=thread.id,
@@ -511,6 +606,49 @@ class ConversationService:
         lines.append("Use /rituals off or /rituals on.")
         return "\n".join(lines)
 
+    async def _handle_streak_command(self, user: User) -> str:
+        result = await self.session.execute(
+            select(Ritual).where(Ritual.user_id == user.id).order_by(Ritual.created_at.asc())
+        )
+        rituals = list(result.scalars())
+        if not rituals:
+            rituals = await RitualService(self.session).seed_defaults_for_user(user)
+
+        enabled = [ritual for ritual in rituals if ritual.enabled]
+        if not enabled:
+            return "Ritual check-ins are off. You can turn them back on with /rituals on."
+
+        payload = await RitualStreakService(self.session).streaks_payload(user.id)
+        lines = ["Rituals and streaks:"]
+        if payload:
+            for item in payload:
+                title = str(item.get("title") or item.get("kind") or "Ritual")
+                count = int(item.get("streak_count") or 0)
+                last = str(item.get("streak_last_date") or "unknown")
+                lines.append(f"- {title}: {count}-day streak (last activity: {last})")
+        else:
+            lines.append("- (none yet): reply within 12h of a check-in to start a streak.")
+        return "\n".join(lines)
+
+    async def _handle_heartbeat_command(self, user: User, argument: str) -> str:
+        text = argument.strip()
+        if not text:
+            body = user.heartbeat_md.strip() or "(empty)"
+            return (
+                "Heartbeat intent:\n"
+                f"{body}\n"
+                "Use /heartbeat <text> to update it, or /heartbeat off to clear it."
+            )
+        if text.lower() in {"off", "clear", "reset"}:
+            user.heartbeat_md = ""
+            user.heartbeat_md_updated_at = None
+            return (
+                "Heartbeat intent cleared. Autonomous outreach will rely on rituals and open loops."
+            )
+        user.heartbeat_md = text[:4000]
+        user.heartbeat_md_updated_at = utc_now()
+        return "Heartbeat intent saved. I will use it as standing guidance for proactive check-ins."
+
     async def _handle_soul_command(self, user: User, argument: str) -> str:
         if argument.strip():
             return "Soul revert is not enabled yet. The current soul overlay is below."
@@ -537,16 +675,120 @@ class ConversationService:
             "confidence": memory.confidence,
             "freshness_score": memory.freshness_score,
             "semantic_text": memory.semantic_text,
+            "visibility": memory.visibility,
+            "last_confirmed_at": memory.last_confirmed_at,
+            "last_accessed_at": memory.last_accessed_at,
+            "created_at": memory.created_at,
+            "updated_at": memory.updated_at,
         }
+
+    def _context_harness_mode(self) -> str:
+        mode = self.settings.context_harness_mode.strip().lower()
+        return mode if mode in {"legacy", "shadow", "active"} else "active"
+
+    @staticmethod
+    def _memory_keys(memories: list[dict]) -> list[str]:
+        return [f"{memory.get('kind')}:{memory.get('key')}" for memory in memories]
+
+    @staticmethod
+    def _document_kinds(memory_documents: dict[str, str]) -> list[str]:
+        return [kind for kind, content in memory_documents.items() if str(content or "").strip()]
+
+    def _context_harness_trace_payload(
+        self,
+        *,
+        mode: str,
+        legacy_memories: list[dict],
+        selected_memories: list[dict],
+        legacy_open_loops: list[dict],
+        selected_open_loops: list[dict],
+        legacy_recent_messages: list[dict],
+        selected_recent_messages: list[dict],
+        legacy_memory_documents: dict[str, str],
+        selected_memory_documents: dict[str, str],
+        selected_thread_summary: str,
+        selected_relationship_signals: list[str],
+        prompt_context,
+        memory_candidates: list[dict],
+    ) -> dict[str, object]:
+        applied = mode == "active"
+        payload = {
+            "mode": mode if mode in {"legacy", "shadow", "active"} else "active",
+            "applied": applied,
+            "candidate_memory_count": len(memory_candidates),
+            "selected_memory_keys": (
+                prompt_context.metadata.get("selected_memory_keys", [])
+                if prompt_context is not None
+                else self._memory_keys(legacy_memories)
+            ),
+            "applied_memory_keys": self._memory_keys(selected_memories),
+            "selected_open_loop_ids": (
+                prompt_context.metadata.get("selected_open_loop_ids", [])
+                if prompt_context is not None
+                else [str(loop.get("id") or "") for loop in selected_open_loops]
+            ),
+            "applied_counts": {
+                "memories": len(selected_memories),
+                "open_loops": len(selected_open_loops),
+                "recent_messages": len(selected_recent_messages),
+                "documents": len(self._document_kinds(selected_memory_documents)),
+                "relationship_signals": len(selected_relationship_signals),
+            },
+            "applied_thread_summary": bool(selected_thread_summary),
+            "budget_usage": (
+                prompt_context.metadata.get("budget_usage", {})
+                if prompt_context is not None
+                else {}
+            ),
+        }
+        if prompt_context is not None:
+            payload["shadow_selected_memory_keys"] = self._memory_keys(prompt_context.memories)
+            payload["shadow_selected_open_loop_ids"] = [
+                str(loop.get("id") or "") for loop in prompt_context.open_loops
+            ]
+            payload["shadow_counts"] = {
+                "memories": len(prompt_context.memories),
+                "open_loops": len(prompt_context.open_loops),
+                "recent_messages": len(prompt_context.recent_messages),
+                "documents": len(self._document_kinds(prompt_context.memory_documents)),
+                "relationship_signals": len(prompt_context.relationship_signals),
+            }
+            payload["shadow_thread_summary"] = bool(prompt_context.thread_summary)
+        if mode == "shadow":
+            payload["shadow_delta"] = {
+                "memory_keys_changed": self._memory_keys(legacy_memories)
+                != self._memory_keys(prompt_context.memories if prompt_context is not None else []),
+                "open_loops_changed": len(legacy_open_loops)
+                != len(prompt_context.open_loops if prompt_context is not None else []),
+                "recent_messages_changed": len(legacy_recent_messages)
+                != len(prompt_context.recent_messages if prompt_context is not None else []),
+                "documents_changed": self._document_kinds(legacy_memory_documents)
+                != self._document_kinds(prompt_context.memory_documents if prompt_context else {}),
+            }
+        return payload
+
+    @staticmethod
+    def _streak_progress_payload(rituals: list[Ritual]) -> list[dict[str, object]]:
+        return [
+            {
+                "kind": ritual.kind,
+                "title": ritual.title,
+                "streak_count": int(ritual.streak_count or 0),
+                "streak_last_date": ritual.streak_last_date,
+            }
+            for ritual in rituals
+        ]
 
     async def _open_loops_payload(self, user_id: str) -> list[dict]:
         from datetime import UTC, datetime
 
         result = await self.session.execute(
-            select(OpenLoop).where(
+            select(OpenLoop)
+            .where(
                 OpenLoop.user_id == user_id,
                 OpenLoop.status == "open",
-            ).limit(10)
+            )
+            .limit(10)
         )
         now = datetime.now(UTC)
         loops = []

@@ -19,6 +19,9 @@ class AgentState(TypedDict, total=False):
     response: str
     trace_metadata: dict[str, Any]
     open_loops: list[dict[str, Any]]
+    streaks: list[dict[str, Any]]
     bridges: list[str]
     recent_messages: list[dict[str, Any]]
     memory_documents: dict[str, str]
+    thread_summary: str
+    relationship_signals: list[str]

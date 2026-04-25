@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from healthclaw.channels.telegram import TelegramAdapter
@@ -8,6 +9,8 @@ from healthclaw.core.tracing import new_trace_id
 from healthclaw.db.session import SessionLocal
 from healthclaw.heartbeat.service import HeartbeatService
 from healthclaw.proactivity.service import ProactivityService
+
+logger = logging.getLogger(__name__)
 
 
 async def process_due_reminders() -> dict[str, int]:
@@ -27,15 +30,11 @@ async def process_due_reminders() -> dict[str, int]:
             if not eligible:
                 if reason == "quiet_hours":
                     reminder.due_at = now + timedelta(minutes=30)
-                    await service.record_decision(
-                        reminder, "deferred", reason, trace_id=trace_id
-                    )
+                    await service.record_decision(reminder, "deferred", reason, trace_id=trace_id)
                     deferred += 1
                 else:
                     reminder.status = "suppressed"
-                    await service.record_decision(
-                        reminder, "suppressed", reason, trace_id=trace_id
-                    )
+                    await service.record_decision(reminder, "suppressed", reason, trace_id=trace_id)
                     suppressed += 1
                 continue
 
@@ -66,7 +65,15 @@ async def process_due_reminders() -> dict[str, int]:
                 await service.record_decision(reminder, "sent", reason, trace_id=trace_id)
                 sent += 1
         await session.commit()
-        return {"sent": sent, "suppressed": suppressed, "deferred": deferred, "failed": failed}
+        result = {
+            "due": len(reminders),
+            "sent": sent,
+            "suppressed": suppressed,
+            "deferred": deferred,
+            "failed": failed,
+        }
+        logger.info("Reminder sweep completed: %s", result)
+        return result
 
 
 async def process_due_heartbeats() -> dict[str, int]:
@@ -79,9 +86,10 @@ async def process_due_heartbeats() -> dict[str, int]:
 
         # Enqueue due rituals for all users, then schedule memory/open-loop work
         from healthclaw.heartbeat.rituals import RitualService
+
         ritual_service = RitualService(session)
-        await ritual_service.enqueue_due_for_all_users(now)
-        await heartbeat.schedule_due_work(now)
+        ritual_jobs = await ritual_service.enqueue_due_for_all_users(now)
+        scheduled_work = await heartbeat.schedule_due_work(now)
 
         jobs = await heartbeat.due_jobs(now)
         sent = 0
@@ -113,6 +121,7 @@ async def process_due_heartbeats() -> dict[str, int]:
 
             # Load user for soft gate
             from healthclaw.db.models import User
+
             user = await session.get(User, job.user_id)
             if user is None:
                 job.status = "suppressed"
@@ -121,9 +130,13 @@ async def process_due_heartbeats() -> dict[str, int]:
                 continue
 
             # Soft gate: LLM skip/run decision
-            decision, action, soft_reason, decision_input, decision_model = (
-                await heartbeat.should_send_soft(job, user, now)
-            )
+            (
+                decision,
+                action,
+                soft_reason,
+                decision_input,
+                decision_model,
+            ) = await heartbeat.should_send_soft(job, user, now)
             if decision == "skip":
                 job.status = "suppressed"
                 await heartbeat.record_event(
@@ -181,10 +194,16 @@ async def process_due_heartbeats() -> dict[str, int]:
                 sent += 1
 
         await session.commit()
-        return {
+        result = {
+            "ritual_jobs": ritual_jobs,
+            "refresh_jobs": int(scheduled_work.get("refresh_jobs", 0)),
+            "open_loop_jobs": int(scheduled_work.get("open_loop_jobs", 0)),
+            "due": len(jobs),
             "sent": sent,
             "suppressed": suppressed,
             "deferred": deferred,
             "soft_skipped": soft_skipped,
             "failed": failed,
         }
+        logger.info("Heartbeat sweep completed: %s", result)
+        return result

@@ -7,7 +7,14 @@ from healthclaw.agent.soul import sanitized_soul_preferences
 from healthclaw.api.deps import SessionDep
 from healthclaw.core.security import require_api_key
 from healthclaw.core.tracing import new_trace_id
-from healthclaw.db.models import ConversationThread, Message, OpenLoop, User, UserSoulPreference
+from healthclaw.db.models import (
+    ConversationThread,
+    Message,
+    OpenLoop,
+    User,
+    UserSoulPreference,
+    utc_now,
+)
 from healthclaw.memory.documents import MarkdownMemoryService
 from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.memory import (
@@ -17,6 +24,8 @@ from healthclaw.schemas.memory import (
     UserMemoryResponse,
 )
 from healthclaw.schemas.users import (
+    HeartbeatProfilePatch,
+    HeartbeatProfileRead,
     OpenLoopRead,
     SoulPreferencesPatch,
     SoulPreferencesRead,
@@ -169,6 +178,37 @@ async def patch_soul_preferences(
         tone_preferences=preferences.tone_preferences,
         response_preferences=preferences.response_preferences,
         blocked_policy_keys=preferences.blocked_policy_keys,
+    )
+
+
+@router.get("/{user_id}/heartbeat", response_model=HeartbeatProfileRead)
+async def get_heartbeat_profile(user_id: str, session: SessionDep) -> HeartbeatProfileRead:
+    user = await ConversationService(session).ensure_user(user_id)
+    return HeartbeatProfileRead(
+        user_id=user.id,
+        heartbeat_md=user.heartbeat_md,
+        heartbeat_md_updated_at=user.heartbeat_md_updated_at,
+    )
+
+
+@router.patch("/{user_id}/heartbeat", response_model=HeartbeatProfileRead)
+async def patch_heartbeat_profile(
+    user_id: str,
+    payload: HeartbeatProfilePatch,
+    session: SessionDep,
+) -> HeartbeatProfileRead:
+    user = await ConversationService(session).ensure_user(user_id)
+    if payload.heartbeat_md is not None:
+        user.heartbeat_md = payload.heartbeat_md.strip()[:4000]
+        user.heartbeat_md_updated_at = utc_now() if user.heartbeat_md else None
+    await session.commit()
+    refreshed = await session.get(User, user_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return HeartbeatProfileRead(
+        user_id=refreshed.id,
+        heartbeat_md=refreshed.heartbeat_md,
+        heartbeat_md_updated_at=refreshed.heartbeat_md_updated_at,
     )
 
 

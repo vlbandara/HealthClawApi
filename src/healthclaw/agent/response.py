@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from healthclaw.agent.safety import SafetyDecision
-from healthclaw.agent.soul import system_prompt, trust_band_label
+from healthclaw.agent.soul import streaks_block, system_prompt, trust_band_label
 from healthclaw.agent.time_context import TimeContext
 from healthclaw.core.config import get_settings
 from healthclaw.integrations.openrouter import OpenRouterClient
@@ -122,14 +122,29 @@ async def generate_companion_response(
     soul_preferences: dict[str, object] | None = None,
     bridges: list[str] | None = None,
     open_loops: list[dict[str, object]] | None = None,
+    streaks: list[dict[str, object]] | None = None,
     recent_messages: list[dict[str, object]] | None = None,
     memory_documents: dict[str, str] | None = None,
     user_context: dict[str, object] | None = None,
+    safety_category: str | None = None,
+    thread_summary: str | None = None,
+    relationship_signals: list[str] | None = None,
 ) -> tuple[str, dict[str, object]]:
+    user_context = user_context or {}
+    trust_band = trust_band_label(_trust_level(user_context))
+    safety_category = safety_category or safety.category
+    streaks = streaks or []
+    streaks_surfaced = bool(streaks_block(streaks, trust_band, safety_category))
+
     if safety.category != "wellness":
         return (
             _deterministic_companion_response(user_content, safety, time_context, memories),
-            {"provider": "deterministic", "reason": safety.category},
+            {
+                "provider": "deterministic",
+                "reason": safety.category,
+                "trust_band": trust_band,
+                "streaks_surfaced": False,
+            },
         )
 
     settings = get_settings()
@@ -137,10 +152,14 @@ async def generate_companion_response(
     if not client.enabled:
         return (
             _deterministic_companion_response(user_content, safety, time_context, memories),
-            {"provider": "deterministic", "reason": "openrouter_not_configured"},
+            {
+                "provider": "deterministic",
+                "reason": "openrouter_not_configured",
+                "trust_band": trust_band,
+                "streaks_surfaced": False,
+            },
         )
 
-    trust_band = trust_band_label(_trust_level(user_context))
     memory_context = "\n".join(_memory_lines(memories)) or "- none"
 
     # Continuity bridges as a tagged block in the user turn (keeps system prompt cacheable)
@@ -148,7 +167,11 @@ async def generate_companion_response(
     if bridges:
         bridge_text = "\n".join(f"- {b}" for b in bridges)
         bridge_block = f"\n<recent_life_bridge>\n{bridge_text}\n</recent_life_bridge>"
-    relationship_block = _relationship_signal_block(user_context, time_context)
+    relationship_block = _relationship_signal_block(
+        user_context,
+        time_context,
+        relationship_signals=relationship_signals,
+    )
     open_loop_lines = [
         f"- {loop.get('title')}"
         for loop in (open_loops or [])[:10]
@@ -163,7 +186,7 @@ async def generate_companion_response(
         max_chars=settings.recent_message_context_max_chars,
     )
     recent_context = "\n".join(recent_lines) or "- none"
-    user_context = user_context or {}
+    conversation_digest = (thread_summary or "").strip()
     runtime_context = {
         "user_id": user_context.get("id", "unknown"),
         "timezone": user_context.get("timezone", "unknown"),
@@ -180,6 +203,8 @@ async def generate_companion_response(
                 lifecycle_stage=_lifecycle_stage(recent_messages),
                 memory_documents=memory_documents,
                 trust_level=_trust_level(user_context),
+                streaks=streaks,
+                safety_category=safety_category,
             ),
         },
         {
@@ -189,6 +214,8 @@ async def generate_companion_response(
                 f"{runtime_context}\n\n"
                 "# Retrieved Memory\n\n"
                 f"{memory_context}\n\n"
+                "# Conversation Digest\n\n"
+                f"{conversation_digest or '- none'}\n\n"
                 "# Recent Conversation\n\n"
                 f"{recent_context}"
                 f"{bridge_block}"
@@ -209,7 +236,12 @@ async def generate_companion_response(
     except RuntimeError:
         return (
             _deterministic_companion_response(user_content, safety, time_context, memories),
-            {"provider": "deterministic", "reason": "openrouter_error", "trust_band": trust_band},
+            {
+                "provider": "deterministic",
+                "reason": "openrouter_error",
+                "trust_band": trust_band,
+                "streaks_surfaced": False,
+            },
         )
     return (
         result.content,
@@ -219,7 +251,9 @@ async def generate_companion_response(
             "usage": result.usage,
             "bridges_used": len(bridges) if bridges else 0,
             "recent_messages_used": len(recent_lines),
+            "conversation_digest_used": bool(conversation_digest),
             "trust_band": trust_band,
+            "streaks_surfaced": streaks_surfaced,
         },
     )
 
@@ -232,19 +266,22 @@ def _trust_level(user_context: dict[str, object]) -> float | None:
 def _relationship_signal_block(
     user_context: dict[str, object],
     time_context: TimeContext,
+    *,
+    relationship_signals: list[str] | None = None,
 ) -> str:
-    lines: list[str] = []
-    sentiment_ema = _float_or_none(user_context.get("sentiment_ema"))
-    voice_text_ratio = _float_or_none(user_context.get("voice_text_ratio"))
-    reply_latency = _float_or_none(user_context.get("reply_latency_seconds_ema"))
-    if sentiment_ema is not None and sentiment_ema <= -0.35:
-        lines.append("Use lower-pressure phrasing, no cheerleading, and smaller next steps.")
-    if voice_text_ratio is not None and voice_text_ratio >= 0.65:
-        lines.append("Favor concise spoken-style phrasing that reads naturally out loud.")
-    if reply_latency is not None and reply_latency >= 43_200:
-        lines.append("Do not frame slow re-entry or delayed replies as failure.")
-    if _is_recent_meaningful_exchange(user_context.get("last_meaningful_exchange_at"), time_context):
-        lines.append("Brief continuity references are safe without asking for a full recap.")
+    lines = list(relationship_signals or [])
+    if not lines:
+        sentiment_ema = _float_or_none(user_context.get("sentiment_ema"))
+        voice_text_ratio = _float_or_none(user_context.get("voice_text_ratio"))
+        reply_latency = _float_or_none(user_context.get("reply_latency_seconds_ema"))
+        if sentiment_ema is not None and sentiment_ema <= -0.35:
+            lines.append("Use lower-pressure phrasing, no cheerleading, and smaller next steps.")
+        if voice_text_ratio is not None and voice_text_ratio >= 0.65:
+            lines.append("Favor concise spoken-style phrasing that reads naturally out loud.")
+        if reply_latency is not None and reply_latency >= 43_200:
+            lines.append("Do not frame slow re-entry or delayed replies as failure.")
+        if _is_recent_meaningful_exchange(user_context.get("last_meaningful_exchange_at"), time_context):
+            lines.append("Brief continuity references are safe without asking for a full recap.")
     if not lines:
         return ""
     relationship_text = "\n".join(f"- {line}" for line in lines)

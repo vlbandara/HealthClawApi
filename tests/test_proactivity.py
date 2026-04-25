@@ -54,7 +54,11 @@ async def test_process_due_reminders_sends_telegram(monkeypatch) -> None:
                 select(ProactiveEvent).where(ProactiveEvent.reminder_id == reminder.id)
             )
         ).scalar_one()
-    assert result == {"sent": 1, "suppressed": 0, "deferred": 0, "failed": 0}
+    assert result["due"] == 1
+    assert result["sent"] == 1
+    assert result["suppressed"] == 0
+    assert result["deferred"] == 0
+    assert result["failed"] == 0
     assert sent_messages == [("123", "Time for your wind-down routine.")]
     assert reminder.status == "sent"
     assert event.decision == "sent"
@@ -103,7 +107,11 @@ async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None
                 select(ProactiveEvent).where(ProactiveEvent.reminder_id == reminder.id)
             )
         ).scalar_one()
-    assert result == {"sent": 0, "suppressed": 0, "deferred": 1, "failed": 0}
+    assert result["due"] == 1
+    assert result["sent"] == 0
+    assert result["suppressed"] == 0
+    assert result["deferred"] == 1
+    assert result["failed"] == 0
     assert reminder.status == "scheduled"
     assert event.decision == "deferred"
 
@@ -157,7 +165,11 @@ async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
                 select(Reminder).where(Reminder.idempotency_key == "reminder-cooldown")
             )
         ).scalar_one()
-    assert result == {"sent": 0, "suppressed": 1, "deferred": 0, "failed": 0}
+    assert result["due"] == 1
+    assert result["sent"] == 0
+    assert result["suppressed"] == 1
+    assert result["deferred"] == 0
+    assert result["failed"] == 0
     assert reminder.status == "suppressed"
 
 
@@ -207,7 +219,12 @@ async def test_process_due_heartbeats_sends_open_loop_followup(monkeypatch) -> N
         event = (
             await session.execute(select(HeartbeatEvent).where(HeartbeatEvent.job_id == job.id))
         ).scalar_one()
-    assert result == {"sent": 1, "suppressed": 0, "deferred": 0, "soft_skipped": 0, "failed": 0}
+    assert result["due"] == 1
+    assert result["sent"] == 1
+    assert result["suppressed"] == 0
+    assert result["deferred"] == 0
+    assert result["soft_skipped"] == 0
+    assert result["failed"] == 0
     assert sent_messages[0][0] == "heartbeat"
     assert "stretch for 10 minutes" in sent_messages[0][1]
     assert job.status == "sent"

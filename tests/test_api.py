@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from healthclaw.core.config import get_settings
@@ -10,7 +10,9 @@ from healthclaw.db.models import (
     InboundEvent,
     Message,
     OpenLoop,
+    Ritual,
     TraceRef,
+    User,
 )
 from healthclaw.db.session import SessionLocal
 from healthclaw.integrations.openrouter import OpenRouterResult
@@ -74,6 +76,10 @@ async def test_conversation_creates_trace_and_checkpoint(client: AsyncClient) ->
 
     assert trace.redacted is True
     assert checkpoint.state["trace_metadata"]["trace_id"] == body["trace_id"]
+    assert isinstance(
+        checkpoint.state["trace_metadata"]["generation"].get("streaks_surfaced"),
+        bool,
+    )
     assert "test@example.com" not in str(checkpoint.state)
 
 
@@ -101,6 +107,75 @@ async def test_second_conversation_message_serializes_checkpoint_state(
         ).scalar_one()
 
     assert isinstance(checkpoint.state["trace_metadata"]["last_interaction_at"], str)
+
+
+async def test_active_mode_applies_context_harness_metadata(client: AsyncClient) -> None:
+    first = await client.post(
+        "/v1/conversations/u-active/messages",
+        json={"content": "My goal is sleep by 10pm."},
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        "/v1/conversations/u-active/messages",
+        json={"content": "Help me with tonight."},
+    )
+    assert second.status_code == 200
+    trace_id = second.json()["trace_id"]
+
+    async with SessionLocal() as session:
+        checkpoint = (
+            await session.execute(
+                select(AgentCheckpoint).where(AgentCheckpoint.trace_id == trace_id)
+            )
+        ).scalar_one()
+
+    harness = checkpoint.state["trace_metadata"]["context_harness"]
+    assert harness["mode"] == "active"
+    assert harness["applied"] is True
+    assert "goal:current_goal" in harness["applied_memory_keys"]
+    assert harness["applied_counts"]["recent_messages"] >= 1
+    assert checkpoint.state["trace_metadata"]["generation"]["conversation_digest_used"] is True
+
+
+async def test_shadow_mode_records_context_harness_metadata(monkeypatch) -> None:
+    from healthclaw.main import create_app
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("CONTEXT_HARNESS_MODE", "shadow")
+
+    app = create_app()
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "test-key"},
+    ) as client:
+        first = await client.post(
+            "/v1/conversations/u-shadow/messages",
+            json={"content": "My goal is sleep by 10pm."},
+        )
+        assert first.status_code == 200
+        second = await client.post(
+            "/v1/conversations/u-shadow/messages",
+            json={"content": "Help me with tonight."},
+        )
+        assert second.status_code == 200
+        trace_id = second.json()["trace_id"]
+
+    async with SessionLocal() as session:
+        checkpoint = (
+            await session.execute(
+                select(AgentCheckpoint).where(AgentCheckpoint.trace_id == trace_id)
+            )
+        ).scalar_one()
+
+        harness = checkpoint.state["trace_metadata"]["context_harness"]
+        assert harness["mode"] == "shadow"
+        assert harness["applied"] is False
+        assert "goal:current_goal" in harness["selected_memory_keys"]
+        assert "shadow_delta" in harness
+    assert "budget_usage" in harness
+    get_settings.cache_clear()
 
 
 async def test_medical_boundary_response(client: AsyncClient) -> None:
@@ -196,6 +271,20 @@ async def test_memory_patch_delete_and_pause_resume(client: AsyncClient) -> None
     assert memory["id"] not in {item["id"] for item in remaining}
 
 
+async def test_heartbeat_profile_patch_and_get(client: AsyncClient) -> None:
+    patched = await client.patch(
+        "/v1/users/u-heartbeat/heartbeat",
+        json={"heartbeat_md": "allow long silence pings after a missed week"},
+    )
+    assert patched.status_code == 200
+    assert "allow long silence" in patched.json()["heartbeat_md"]
+    assert patched.json()["heartbeat_md_updated_at"] is not None
+
+    fetched = await client.get("/v1/users/u-heartbeat/heartbeat")
+    assert fetched.status_code == 200
+    assert fetched.json()["heartbeat_md"] == patched.json()["heartbeat_md"]
+
+
 async def test_telegram_webhook_idempotency(client: AsyncClient) -> None:
     update = {
         "update_id": 9001,
@@ -264,7 +353,107 @@ async def test_conversation_uses_openrouter_when_configured(
     assert response.status_code == 200
     assert response.json()["response"] == "OpenRouter wellness reply"
     assert {"max_tokens": 700, "temperature": 0.75} in captured
+
+    async with SessionLocal() as session:
+        checkpoint = (
+            (
+                await session.execute(
+                    select(AgentCheckpoint).where(AgentCheckpoint.user_id == "u-openrouter")
+                )
+            )
+            .scalars()
+            .first()
+        )
+    assert checkpoint is not None
+    assert isinstance(
+        checkpoint.state["trace_metadata"]["generation"].get("streaks_surfaced"),
+        bool,
+    )
     get_settings.cache_clear()
+
+
+async def test_slash_streak_command_no_streaks_yet(client: AsyncClient) -> None:
+    response = await client.post(
+        "/v1/conversations/u-streak-cmd/messages",
+        json={"content": "/streak"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["safety_category"] == "command"
+    assert "Rituals and streaks:" in body["response"]
+    assert "reply within 12h" in body["response"]
+
+
+async def test_slash_streak_command_lists_existing_streak(client: AsyncClient) -> None:
+    async with SessionLocal() as session:
+        session.add(
+            User(
+                id="u-streak-cmd-2",
+                timezone="UTC",
+                quiet_start="23:00",
+                quiet_end="07:00",
+            )
+        )
+        session.add(
+            Ritual(
+                id="ritual-streak-1",
+                user_id="u-streak-cmd-2",
+                kind="morning_check_in",
+                title="Morning check-in",
+                schedule_cron="0 8 * * *",
+                prompt_template="Good morning.",
+                enabled=True,
+                streak_count=7,
+                streak_last_date="2026-04-23",
+            )
+        )
+        await session.commit()
+
+    response = await client.post(
+        "/v1/conversations/u-streak-cmd-2/messages",
+        json={"content": "/streak"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "Morning check-in: 7-day streak" in body["response"]
+    assert "2026-04-23" in body["response"]
+
+
+async def test_slash_streak_command_when_rituals_disabled(client: AsyncClient) -> None:
+    await client.post(
+        "/v1/conversations/u-streak-off/messages",
+        json={"content": "/rituals off"},
+    )
+    response = await client.post(
+        "/v1/conversations/u-streak-off/messages",
+        json={"content": "/streak"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "Ritual check-ins are off" in body["response"]
+
+
+async def test_slash_heartbeat_command_round_trip(client: AsyncClient) -> None:
+    saved = await client.post(
+        "/v1/conversations/u-heartbeat-cmd/messages",
+        json={"content": "/heartbeat allow long silence pings after missed routines"},
+    )
+    assert saved.status_code == 200
+    assert "Heartbeat intent saved" in saved.json()["response"]
+
+    shown = await client.post(
+        "/v1/conversations/u-heartbeat-cmd/messages",
+        json={"content": "/heartbeat"},
+    )
+    assert shown.status_code == 200
+    assert "allow long silence pings" in shown.json()["response"]
+
+    cleared = await client.post(
+        "/v1/conversations/u-heartbeat-cmd/messages",
+        json={"content": "/heartbeat off"},
+    )
+    assert cleared.status_code == 200
+    assert "Heartbeat intent cleared" in cleared.json()["response"]
 
 
 async def test_conversation_sends_recent_thread_context_to_openrouter(
@@ -316,8 +505,7 @@ async def test_memory_endpoint_returns_markdown_documents(client: AsyncClient) -
 
     assert memory_response.status_code == 200
     documents = {
-        document["kind"]: document["content"]
-        for document in memory_response.json()["documents"]
+        document["kind"]: document["content"] for document in memory_response.json()["documents"]
     }
     assert "Preferred name: Vinodh" in documents["USER"]
     assert "sleep by 10pm" in documents["MEMORY"]

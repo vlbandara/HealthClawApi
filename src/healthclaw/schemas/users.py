@@ -46,6 +46,16 @@ class SoulPreferencesRead(BaseModel):
     blocked_policy_keys: list[str] = Field(default_factory=list)
 
 
+class HeartbeatProfilePatch(BaseModel):
+    heartbeat_md: str | None = None
+
+
+class HeartbeatProfileRead(BaseModel):
+    user_id: str
+    heartbeat_md: str = ""
+    heartbeat_md_updated_at: datetime | None = None
+
+
 class TimelineMessage(BaseModel):
     id: str
     role: str

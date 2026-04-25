@@ -54,9 +54,7 @@ class MemoryService:
         if not include_internal:
             filters.append(Memory.visibility == "user_visible")
         result = await self.session.execute(
-            select(Memory)
-            .where(*filters)
-            .order_by(kind_priority, Memory.key)
+            select(Memory).where(*filters).order_by(kind_priority, Memory.key)
         )
         memories = list(result.scalars())
         for memory in memories:
@@ -326,7 +324,7 @@ class MemoryService:
                     )
                 memory.has_embedding = True
         except Exception as exc:
-            logger.debug("Embedding failed for memory %s: %s", memory.id, exc)
+            logger.warning("Embedding failed for memory %s: %s", memory.id, exc)
 
     async def _policy_proposal_shadow_memory(
         self,

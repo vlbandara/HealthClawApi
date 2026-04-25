@@ -17,6 +17,7 @@ async def heartbeat_sweep_cron(ctx: dict) -> dict:
 
         results["reminders"] = await process_due_reminders()
         results["heartbeats"] = await process_due_heartbeats()
+        logger.info("heartbeat_sweep_cron completed: %s", results)
     except Exception as exc:
         logger.error("heartbeat_sweep_cron failed: %s", exc)
         results["error"] = str(exc)
@@ -59,7 +60,9 @@ async def consolidator_sweep_cron(ctx: dict) -> dict:
         except Exception as exc:
             logger.warning("Consolidator failed for user %s: %s", user.id, exc)
 
-    return {"users_processed": len(users), "episodes_created": total_episodes}
+    result = {"users_processed": len(users), "episodes_created": total_episodes}
+    logger.info("consolidator_sweep_cron completed: %s", result)
+    return result
 
 
 async def dream_sweep_cron(ctx: dict) -> dict:
@@ -100,7 +103,9 @@ async def dream_sweep_cron(ctx: dict) -> dict:
         except Exception as exc:
             logger.warning("Dream failed for user %s: %s", user.id, exc)
 
-    return {"users_processed": len(users), "completed": completed, "changes_applied": applied}
+    result = {"users_processed": len(users), "completed": completed, "changes_applied": applied}
+    logger.info("dream_sweep_cron completed: %s", result)
+    return result
 
 
 async def autonomous_wake_sweep(ctx: dict) -> dict:
@@ -115,7 +120,9 @@ async def autonomous_wake_sweep(ctx: dict) -> dict:
             scheduled = await heartbeat.schedule_autonomous_wake(datetime.now(UTC))
             await session.commit()
         processed = await process_due_heartbeats()
-        return {"scheduled": scheduled, "processed": processed}
+        result = {"scheduled": scheduled, "processed": processed}
+        logger.info("autonomous_wake_sweep completed: %s", result)
+        return result
     except Exception as exc:
         logger.error("autonomous_wake_sweep failed: %s", exc)
         return {"error": str(exc)}
@@ -148,7 +155,9 @@ async def run_consolidator_for_user(ctx: dict, user_id: str) -> dict:
         consolidator = ConsolidatorService(session, settings, memory_service)
         count = await consolidator.run_for_user(user_id)
         await session.commit()
-    return {"user_id": user_id, "episodes_created": count}
+    result = {"user_id": user_id, "episodes_created": count}
+    logger.info("run_consolidator_for_user completed: %s", result)
+    return result
 
 
 async def run_dream_for_user(ctx: dict, user_id: str) -> dict:
@@ -162,7 +171,9 @@ async def run_dream_for_user(ctx: dict, user_id: str) -> dict:
         service = DreamService(session, settings, MemoryService(session))
         outcome = await service.run_for_user(user_id)
         await session.commit()
-    return {"user_id": user_id, **outcome}
+    result = {"user_id": user_id, **outcome}
+    logger.info("run_dream_for_user completed: %s", result)
+    return result
 
 
 async def embed_memory_batch(ctx: dict, memory_ids: list[str]) -> dict:
@@ -191,4 +202,6 @@ async def embed_memory_batch(ctx: dict, memory_ids: list[str]) -> dict:
                 logger.warning("Failed to embed memory %s: %s", memory.id, exc)
         await session.commit()
 
-    return {"requested": len(memory_ids), "updated": updated}
+    result = {"requested": len(memory_ids), "updated": updated}
+    logger.info("embed_memory_batch completed: %s", result)
+    return result

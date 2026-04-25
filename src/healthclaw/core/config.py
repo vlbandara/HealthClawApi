@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     openrouter_dream_model: str = "google/gemini-2.5-flash-lite"
     openrouter_decision_model: str = "google/gemini-2.5-flash-lite"
     openrouter_embedding_model: str = "openai/text-embedding-3-small"
+    context_harness_mode: str = "active"
+    context_harness_candidate_memory_limit: int = 16
+    context_harness_memory_chars: int = 1800
+    context_harness_open_loop_chars: int = 320
+    context_harness_recent_raw_turn_limit: int = 6
+    context_harness_recent_chars: int = 2200
+    context_harness_thread_summary_chars: int = 480
+    context_harness_doc_section_chars: int = 420
+    context_harness_document_chars: int = 1400
     use_arq_worker: bool = False
 
     @property
