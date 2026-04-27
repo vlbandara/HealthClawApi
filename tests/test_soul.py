@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from healthclaw.agent.soul import default_policy_memory, system_prompt, trust_band_label, trust_tone_block
+from healthclaw.agent.soul import (
+    default_policy_memory,
+    system_prompt,
+    trust_band_label,
+    trust_tone_block,
+)
 
 
 def test_system_prompt_prioritizes_natural_first_chat() -> None:

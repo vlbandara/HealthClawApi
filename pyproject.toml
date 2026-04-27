@@ -24,6 +24,8 @@ dependencies = [
   "pgvector>=0.3.0",
   "arq>=0.26.0",
   "croniter>=2.0.0",
+  "cryptography>=42.0.0",
+  "pyjwt>=2.8.0",
 ]
 
 [project.optional-dependencies]

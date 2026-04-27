@@ -11,6 +11,7 @@ from healthclaw.agent.time_context import build_time_context
 from healthclaw.core.config import get_settings
 from healthclaw.core.tracing import new_trace_id, redacted_payload
 from healthclaw.db.models import (
+    Account,
     AgentCheckpoint,
     ChannelAccount,
     ConversationThread,
@@ -40,6 +41,7 @@ from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.events import ConversationEvent
 from healthclaw.schemas.memory import MemoryMutation
 from healthclaw.schemas.messages import MessageResponse
+from healthclaw.services.account import AccountService
 
 logger = logging.getLogger(__name__)
 
@@ -127,10 +129,19 @@ class ConversationService:
             account.metadata_ = metadata or account.metadata_
 
     async def handle_event(
-        self, event: ConversationEvent, timezone: str | None = None
+        self,
+        event: ConversationEvent,
+        timezone: str | None = None,
+        *,
+        account_id: str | None = None,
     ) -> MessageResponse:
         trace_id = new_trace_id()
         user = await self.ensure_user(event.user_id, timezone)
+        account: Account | None = None
+        if account_id:
+            account = await self.session.get(Account, account_id)
+            if account is not None and account.user_id is None:
+                account.user_id = user.id
         inbound_event: InboundEvent | None = None
         if event.idempotency_key:
             existing = await self.session.execute(
@@ -445,6 +456,8 @@ class ConversationService:
         if inbound_event is not None:
             inbound_event.assistant_message_id = assistant_message.id
             inbound_event.response_payload = response_payload
+        if account is not None:
+            await AccountService(self.session, self.settings).increment_message_usage(account)
         await self.session.commit()
 
         return MessageResponse(**response_payload)

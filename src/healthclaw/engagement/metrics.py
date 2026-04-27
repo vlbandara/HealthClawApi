@@ -108,7 +108,10 @@ def update_meaningful_engagement(
     if previous_assistant_message_at is not None:
         previous_assistant_message_at = _ensure_utc(previous_assistant_message_at)
         user_message_at = _ensure_utc(user_message_at)
-        latency_seconds = max(0.0, (user_message_at - previous_assistant_message_at).total_seconds())
+        latency_seconds = max(
+            0.0,
+            (user_message_at - previous_assistant_message_at).total_seconds(),
+        )
         engagement.reply_latency_seconds_ema = _ema(
             engagement.reply_latency_seconds_ema,
             latency_seconds,

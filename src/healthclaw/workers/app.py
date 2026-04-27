@@ -9,6 +9,7 @@ from healthclaw.core.tracing import new_trace_id
 from healthclaw.db.session import SessionLocal
 from healthclaw.heartbeat.service import HeartbeatService
 from healthclaw.proactivity.service import ProactivityService
+from healthclaw.services.account import AccountService
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ async def process_due_reminders() -> dict[str, int]:
     telegram = TelegramAdapter(settings)
     async with SessionLocal() as session:
         service = ProactivityService(session)
+        accounts = AccountService(session, settings)
         reminders = await service.due_reminders(datetime.now(UTC))
         sent = 0
         suppressed = 0
@@ -49,9 +51,21 @@ async def process_due_reminders() -> dict[str, int]:
                 failed += 1
                 continue
 
+            bot_token: str | None = None
+            if settings.multi_tenant_mode:
+                bot_token = await accounts.get_bot_token_for_user(reminder.user_id)
+                if bot_token is None:
+                    reminder.status = "failed"
+                    reminder.last_error = "bot_token_unavailable"
+                    reminder.attempts += 1
+                    await service.record_decision(
+                        reminder, "failed", "bot_token_unavailable", trace_id=trace_id
+                    )
+                    failed += 1
+                    continue
             try:
-                await telegram.send_status(external_id, "typing")
-                await telegram.send_message(external_id, reminder.text)
+                await telegram.send_status(external_id, "typing", bot_token=bot_token)
+                await telegram.send_message(external_id, reminder.text, bot_token=bot_token)
             except Exception:
                 reminder.status = "failed"
                 reminder.last_error = "send_error"
@@ -82,6 +96,7 @@ async def process_due_heartbeats() -> dict[str, int]:
     async with SessionLocal() as session:
         heartbeat = HeartbeatService(session, settings)
         proactivity = ProactivityService(session)
+        accounts = AccountService(session, settings)
         now = datetime.now(UTC)
 
         # Enqueue due rituals for all users, then schedule memory/open-loop work
@@ -162,10 +177,27 @@ async def process_due_heartbeats() -> dict[str, int]:
                 failed += 1
                 continue
 
+            bot_token: str | None = None
+            if settings.multi_tenant_mode:
+                bot_token = await accounts.get_bot_token_for_user(job.user_id)
+                if bot_token is None:
+                    job.status = "failed"
+                    job.last_error = "bot_token_unavailable"
+                    job.attempts += 1
+                    await heartbeat.record_event(
+                        job,
+                        "failed",
+                        "bot_token_unavailable",
+                        trace_id=trace_id,
+                        decision_input=decision_input,
+                        decision_model=decision_model,
+                    )
+                    failed += 1
+                    continue
             try:
                 message_text = await heartbeat.render_job(job, action_override=action)
-                await telegram.send_status(external_id, "typing")
-                await telegram.send_message(external_id, message_text)
+                await telegram.send_status(external_id, "typing", bot_token=bot_token)
+                await telegram.send_message(external_id, message_text, bot_token=bot_token)
             except Exception:
                 job.status = "failed"
                 job.last_error = "send_error"
