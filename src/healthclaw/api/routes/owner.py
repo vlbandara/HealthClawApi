@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from healthclaw.services.auth import (
 )
 
 router = APIRouter(tags=["owner"])
+AccountDep = Annotated[Account, Depends(require_account)]
 
 
 class MagicLinkRequest(BaseModel):
@@ -134,7 +135,7 @@ async def consume_magic_link(payload: MagicLinkConsumeRequest) -> SessionRespons
 
 
 @router.get("/v1/me", response_model=AccountStateResponse)
-async def me(account: Account = Depends(require_account)) -> AccountStateResponse:
+async def me(account: AccountDep) -> AccountStateResponse:
     settings = get_settings()
     async with SessionLocal() as session:
         fresh = await session.get(Account, account.id)
@@ -147,7 +148,8 @@ async def me(account: Account = Depends(require_account)) -> AccountStateRespons
 
 @router.post("/v1/me/bot-token", response_model=BindBotTokenResponse)
 async def bind_bot_token(
-    payload: BindBotTokenRequest, account: Account = Depends(require_account)
+    payload: BindBotTokenRequest,
+    account: AccountDep,
 ) -> BindBotTokenResponse:
     settings = get_settings()
     async with SessionLocal() as session:
@@ -170,7 +172,7 @@ async def bind_bot_token(
 
 
 @router.post("/v1/me/pause", response_model=AccountStateResponse)
-async def pause_account(account: Account = Depends(require_account)) -> AccountStateResponse:
+async def pause_account(account: AccountDep) -> AccountStateResponse:
     settings = get_settings()
     async with SessionLocal() as session:
         fresh = await session.get(Account, account.id)
@@ -182,7 +184,7 @@ async def pause_account(account: Account = Depends(require_account)) -> AccountS
 
 
 @router.post("/v1/me/resume", response_model=AccountStateResponse)
-async def resume_account(account: Account = Depends(require_account)) -> AccountStateResponse:
+async def resume_account(account: AccountDep) -> AccountStateResponse:
     settings = get_settings()
     async with SessionLocal() as session:
         fresh = await session.get(Account, account.id)
@@ -194,7 +196,7 @@ async def resume_account(account: Account = Depends(require_account)) -> Account
 
 
 @router.delete("/v1/me", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_account(account: Account = Depends(require_account)) -> None:
+async def delete_account(account: AccountDep) -> None:
     settings = get_settings()
     async with SessionLocal() as session:
         fresh = await session.get(Account, account.id)
@@ -207,5 +209,5 @@ async def delete_account(account: Account = Depends(require_account)) -> None:
 
 
 @router.get("/v1/me/healthz", response_model=dict[str, Any])
-async def health_for_account(account: Account = Depends(require_account)) -> dict[str, Any]:
+async def health_for_account(account: AccountDep) -> dict[str, Any]:
     return {"ok": True, "account_id": account.id}

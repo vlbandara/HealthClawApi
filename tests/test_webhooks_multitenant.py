@@ -136,7 +136,11 @@ async def test_webhook_auto_binds_user_id(client, seeded_account, monkeypatch) -
         assert account.monthly_message_count == 1
 
 
-async def test_webhook_rejects_foreign_chat_after_binding(client, seeded_account, monkeypatch) -> None:
+async def test_webhook_rejects_foreign_chat_after_binding(
+    client,
+    seeded_account,
+    monkeypatch,
+) -> None:
     sent = await _patch_send_and_handle(monkeypatch)
     async with SessionLocal() as session:
         account = await session.get(Account, seeded_account)

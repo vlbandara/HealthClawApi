@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
-from collections.abc import AsyncIterator
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
-
+from alembic import command
 from healthclaw.agent.soul import HEALTHCLAW_IDENTITY, identity_config
 from healthclaw.core.config import get_settings
 from healthclaw.db.models import Base, Identity
@@ -63,7 +67,9 @@ async def _ensure_postgres_schema(conn: AsyncConnection) -> None:
     from sqlalchemy import text
 
     await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    await conn.execute(text("ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_vec vector(1536)"))
+    await conn.execute(
+        text("ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_vec vector(1536)")
+    )
     await conn.execute(
         text(
             "CREATE INDEX IF NOT EXISTS ix_memories_embedding_user "

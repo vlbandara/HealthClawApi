@@ -170,7 +170,9 @@ def build_decision_input(
     )
     last_meaningful_exchange_at = relationship_payload.get("last_meaningful_exchange_at")
     if hasattr(last_meaningful_exchange_at, "isoformat"):
-        relationship_payload["last_meaningful_exchange_at"] = last_meaningful_exchange_at.isoformat()
+        relationship_payload["last_meaningful_exchange_at"] = (
+            last_meaningful_exchange_at.isoformat()
+        )
     return {
         "time_context": {
             "part_of_day": time_context.part_of_day,

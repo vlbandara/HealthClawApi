@@ -36,16 +36,27 @@ def _make_ritual(
 async def test_attribution_window_first_reply_only() -> None:
     now = datetime(2026, 4, 21, 10, 0, tzinfo=UTC)
     async with SessionLocal() as session:
-        user = User(id="u-streak-window", timezone="UTC", quiet_start="23:00", quiet_end="07:00")
+        user = User(
+            id="u-streak-window",
+            timezone="UTC",
+            quiet_start="23:00",
+            quiet_end="07:00",
+        )
         ritual = _make_ritual(user_id=user.id, last_fired_at=now - timedelta(hours=2))
         session.add_all([user, ritual])
         await session.commit()
 
         service = RitualStreakService(session)
         advanced1 = await service.record_meaningful_exchange(user, now, "wellness")
-        advanced2 = await service.record_meaningful_exchange(user, now + timedelta(hours=1), "wellness")
+        advanced2 = await service.record_meaningful_exchange(
+            user,
+            now + timedelta(hours=1),
+            "wellness",
+        )
 
-        refreshed = (await session.execute(select(Ritual).where(Ritual.id == ritual.id))).scalar_one()
+        refreshed = (
+            await session.execute(select(Ritual).where(Ritual.id == ritual.id))
+        ).scalar_one()
 
     assert len(advanced1) == 1
     assert len(advanced2) == 0
@@ -56,13 +67,24 @@ async def test_attribution_window_first_reply_only() -> None:
 async def test_outside_window_no_credit() -> None:
     now = datetime(2026, 4, 21, 10, 0, tzinfo=UTC)
     async with SessionLocal() as session:
-        user = User(id="u-streak-outside", timezone="UTC", quiet_start="23:00", quiet_end="07:00")
+        user = User(
+            id="u-streak-outside",
+            timezone="UTC",
+            quiet_start="23:00",
+            quiet_end="07:00",
+        )
         ritual = _make_ritual(user_id=user.id, last_fired_at=now - timedelta(hours=14))
         session.add_all([user, ritual])
         await session.commit()
 
-        advanced = await RitualStreakService(session).record_meaningful_exchange(user, now, "wellness")
-        refreshed = (await session.execute(select(Ritual).where(Ritual.id == ritual.id))).scalar_one()
+        advanced = await RitualStreakService(session).record_meaningful_exchange(
+            user,
+            now,
+            "wellness",
+        )
+        refreshed = (
+            await session.execute(select(Ritual).where(Ritual.id == ritual.id))
+        ).scalar_one()
 
     assert advanced == []
     assert refreshed.streak_count == 0
@@ -72,13 +94,24 @@ async def test_outside_window_no_credit() -> None:
 async def test_crisis_skip_even_inside_window() -> None:
     now = datetime(2026, 4, 21, 10, 0, tzinfo=UTC)
     async with SessionLocal() as session:
-        user = User(id="u-streak-crisis", timezone="UTC", quiet_start="23:00", quiet_end="07:00")
+        user = User(
+            id="u-streak-crisis",
+            timezone="UTC",
+            quiet_start="23:00",
+            quiet_end="07:00",
+        )
         ritual = _make_ritual(user_id=user.id, last_fired_at=now - timedelta(hours=1))
         session.add_all([user, ritual])
         await session.commit()
 
-        advanced = await RitualStreakService(session).record_meaningful_exchange(user, now, "crisis")
-        refreshed = (await session.execute(select(Ritual).where(Ritual.id == ritual.id))).scalar_one()
+        advanced = await RitualStreakService(session).record_meaningful_exchange(
+            user,
+            now,
+            "crisis",
+        )
+        refreshed = (
+            await session.execute(select(Ritual).where(Ritual.id == ritual.id))
+        ).scalar_one()
 
     assert advanced == []
     assert refreshed.streak_count == 0
@@ -87,7 +120,12 @@ async def test_crisis_skip_even_inside_window() -> None:
 async def test_day_over_day_advance_and_gap_reset() -> None:
     now = datetime(2026, 4, 21, 10, 0, tzinfo=UTC)
     async with SessionLocal() as session:
-        user = User(id="u-streak-gap", timezone="UTC", quiet_start="23:00", quiet_end="07:00")
+        user = User(
+            id="u-streak-gap",
+            timezone="UTC",
+            quiet_start="23:00",
+            quiet_end="07:00",
+        )
         ritual_advance = _make_ritual(
             user_id=user.id,
             last_fired_at=now - timedelta(hours=1),
@@ -123,7 +161,12 @@ async def test_day_over_day_advance_and_gap_reset() -> None:
 async def test_timezone_correctness_uses_user_local_date() -> None:
     turn_at = datetime(2026, 4, 21, 23, 30, tzinfo=UTC)
     async with SessionLocal() as session:
-        utc_user = User(id="u-streak-tz-utc", timezone="UTC", quiet_start="23:00", quiet_end="07:00")
+        utc_user = User(
+            id="u-streak-tz-utc",
+            timezone="UTC",
+            quiet_start="23:00",
+            quiet_end="07:00",
+        )
         nz_user = User(
             id="u-streak-tz-nz",
             timezone="Pacific/Auckland",
@@ -145,8 +188,16 @@ async def test_timezone_correctness_uses_user_local_date() -> None:
         session.add_all([utc_user, nz_user, utc_ritual, nz_ritual])
         await session.commit()
 
-        await RitualStreakService(session).record_meaningful_exchange(utc_user, turn_at, "wellness")
-        await RitualStreakService(session).record_meaningful_exchange(nz_user, turn_at, "wellness")
+        await RitualStreakService(session).record_meaningful_exchange(
+            utc_user,
+            turn_at,
+            "wellness",
+        )
+        await RitualStreakService(session).record_meaningful_exchange(
+            nz_user,
+            turn_at,
+            "wellness",
+        )
 
         utc_refreshed = (
             await session.execute(select(Ritual).where(Ritual.id == utc_ritual.id))
@@ -181,7 +232,12 @@ async def test_streaks_payload_filters_enabled_and_sorts_desc() -> None:
 
 def test_soul_block_gate_rules() -> None:
     streaks = [
-        {"kind": "morning_check_in", "title": "Morning check-in", "streak_count": 7, "streak_last_date": "2026-04-23"}
+        {
+            "kind": "morning_check_in",
+            "title": "Morning check-in",
+            "streak_count": 7,
+            "streak_last_date": "2026-04-23",
+        }
     ]
     assert streaks_block(streaks, "low", "benign") == ""
     assert streaks_block(streaks, "medium", "crisis") == ""
@@ -193,4 +249,3 @@ def test_soul_block_gate_rules() -> None:
     block = streaks_block(streaks, "high", "benign")
     assert "morning_check_in" in block
     assert "7-day streak" in block
-

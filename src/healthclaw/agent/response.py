@@ -280,7 +280,10 @@ def _relationship_signal_block(
             lines.append("Favor concise spoken-style phrasing that reads naturally out loud.")
         if reply_latency is not None and reply_latency >= 43_200:
             lines.append("Do not frame slow re-entry or delayed replies as failure.")
-        if _is_recent_meaningful_exchange(user_context.get("last_meaningful_exchange_at"), time_context):
+        if _is_recent_meaningful_exchange(
+            user_context.get("last_meaningful_exchange_at"),
+            time_context,
+        ):
             lines.append("Brief continuity references are safe without asking for a full recap.")
     if not lines:
         return ""
