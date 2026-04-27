@@ -9,6 +9,8 @@ from httpx import ASGITransport, AsyncClient
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["AUTO_CREATE_DB"] = "true"
 os.environ["API_KEY"] = "test-key"
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-please-use-32-bytes-minimum")
+os.environ.setdefault("FERNET_KEY", "TnD3ps1d0z9ytbJkBaPbLjMJMMuTX4U_H_ADahasMLU=")
 
 from healthclaw.db.models import Base
 from healthclaw.db.session import engine

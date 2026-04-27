@@ -460,6 +460,41 @@ class Ritual(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class Account(Base):
+    __tablename__ = "accounts"
+    __table_args__ = (UniqueConstraint("email", name="uq_accounts_email"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(254))
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    bot_token_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bot_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bot_telegram_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    webhook_secret: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    plan: Mapped[str] = mapped_column(String(32), default="free")
+    monthly_message_count: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_message_period_start: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class AuthMagicLink(Base):
+    __tablename__ = "auth_magic_links"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class UserMemoryCursor(Base):
     __tablename__ = "user_memory_cursors"
     __table_args__ = (UniqueConstraint("user_id", name="uq_memory_cursor_user"),)

@@ -17,10 +17,15 @@ class TelegramAdapter(ChannelAdapter):
         self.settings = settings
         self.transcription = TranscriptionService(settings)
 
+    def _resolve_token(self, bot_token: str | None) -> str | None:
+        return bot_token or self.settings.telegram_bot_token
+
     async def event_from_payload(self, payload: dict[str, Any]) -> ConversationEvent | None:
         return await self.event_from_update(payload)
 
-    async def event_from_update(self, update: dict[str, Any]) -> ConversationEvent | None:
+    async def event_from_update(
+        self, update: dict[str, Any], *, bot_token: str | None = None
+    ) -> ConversationEvent | None:
         message = update.get("message") or update.get("edited_message")
         if not message:
             return None
@@ -44,7 +49,7 @@ class TelegramAdapter(ChannelAdapter):
             )
         if voice := message.get("voice"):
             transcript = await self.transcription.transcribe_telegram_voice(
-                voice, self.settings.telegram_bot_token
+                voice, self._resolve_token(bot_token)
             )
             return ConversationEvent(
                 user_id=user_id,
@@ -57,17 +62,23 @@ class TelegramAdapter(ChannelAdapter):
             )
         return None
 
-    async def send_status(self, external_id: str, status: str) -> None:
-        if not self.settings.telegram_bot_token or status != "typing":
+    async def send_status(
+        self, external_id: str, status: str, *, bot_token: str | None = None
+    ) -> None:
+        token = self._resolve_token(bot_token)
+        if not token or status != "typing":
             return
-        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendChatAction"
+        url = f"https://api.telegram.org/bot{token}/sendChatAction"
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(url, json={"chat_id": external_id, "action": "typing"})
 
-    async def send_message(self, external_id: str, text: str) -> DeliveryResult:
-        if not self.settings.telegram_bot_token:
+    async def send_message(
+        self, external_id: str, text: str, *, bot_token: str | None = None
+    ) -> DeliveryResult:
+        token = self._resolve_token(bot_token)
+        if not token:
             return DeliveryResult(delivered=False, error="telegram_bot_token_missing")
-        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(url, json={"chat_id": external_id, "text": text})
             response.raise_for_status()

@@ -24,9 +24,13 @@ class ChannelAdapter(ABC):
     def can_send_proactive(self) -> bool:
         return True
 
-    async def send_status(self, external_id: str, status: str) -> None:
+    async def send_status(
+        self, external_id: str, status: str, *, bot_token: str | None = None
+    ) -> None:
         return None
 
     @abstractmethod
-    async def send_message(self, external_id: str, text: str) -> DeliveryResult:
+    async def send_message(
+        self, external_id: str, text: str, *, bot_token: str | None = None
+    ) -> DeliveryResult:
         raise NotImplementedError

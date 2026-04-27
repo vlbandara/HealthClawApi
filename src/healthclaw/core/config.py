@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     default_proactive_cooldown_minutes: int = 180
     telegram_bot_token: str | None = None
     telegram_webhook_secret: str | None = None
+    multi_tenant_mode: bool = False
+    public_base_url: str = "http://localhost:8000"
+    fernet_key: str | None = None
+    jwt_secret: str | None = None
+    magic_link_ttl_minutes: int = 15
+    session_ttl_days: int = 30
+    free_tier_monthly_messages: int = 500
+    resend_api_key: str | None = None
+    magic_link_from_email: str = "Healthclaw <noreply@healthclaw.local>"
+    magic_link_callback_url: str = "http://localhost:3000/auth/callback"
     openrouter_api_key: str | None = None
     openrouter_chat_model: str = "moonshotai/kimi-k2.6"
     openrouter_chat_fallback_models: str = "minimax/minimax-m2.7,openai/gpt-5.4-mini"

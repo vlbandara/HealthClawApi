@@ -12,7 +12,7 @@ from healthclaw.workers.app import process_due_heartbeats, process_due_reminders
 async def test_process_due_reminders_sends_telegram(monkeypatch) -> None:
     sent_messages: list[tuple[str, str]] = []
 
-    async def fake_send_message(self, external_id: str, text: str) -> None:
+    async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
         sent_messages.append((external_id, text))
 
     monkeypatch.setattr(
@@ -65,7 +65,7 @@ async def test_process_due_reminders_sends_telegram(monkeypatch) -> None:
 
 
 async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None:
-    async def fake_send_message(self, external_id: str, text: str) -> None:
+    async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
         raise AssertionError("quiet-hour reminders should not be delivered")
 
     monkeypatch.setattr(
@@ -117,7 +117,7 @@ async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None
 
 
 async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
-    async def fake_send_message(self, external_id: str, text: str) -> None:
+    async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
         raise AssertionError("cooldown reminders should not be delivered")
 
     monkeypatch.setattr(
@@ -176,7 +176,7 @@ async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
 async def test_process_due_heartbeats_sends_open_loop_followup(monkeypatch) -> None:
     sent_messages: list[tuple[str, str]] = []
 
-    async def fake_send_message(self, external_id: str, text: str) -> None:
+    async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
         sent_messages.append((external_id, text))
 
     monkeypatch.setattr(
