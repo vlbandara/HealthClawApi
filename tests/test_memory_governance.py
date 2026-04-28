@@ -60,7 +60,7 @@ async def test_high_impact_policy_change_becomes_proposal() -> None:
             )
         )
         service = MemoryService(session)
-        memory = await service.upsert_memory(
+        memory, _outcome = await service.upsert_memory(
             "u-policy",
             MemoryMutation(
                 kind="policy",
@@ -94,7 +94,7 @@ async def test_upsert_reactivates_deleted_memory_and_keeps_source_history() -> N
             )
         )
         service = MemoryService(session)
-        memory = await service.upsert_memory(
+        memory, _outcome = await service.upsert_memory(
             "u-relearn",
             MemoryMutation(
                 kind="goal",
@@ -107,7 +107,7 @@ async def test_upsert_reactivates_deleted_memory_and_keeps_source_history() -> N
         )
         assert await service.delete_user_memory("u-relearn", memory.id)
 
-        relearned = await service.upsert_memory(
+        relearned, _outcome2 = await service.upsert_memory(
             "u-relearn",
             MemoryMutation(
                 kind="goal",

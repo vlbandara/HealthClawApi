@@ -301,7 +301,7 @@ class ConversationService:
                 "user": user_context,
                 "user_content": event.content,
                 "channel": event.channel,
-                "user_message": {"id": user_message.id},
+                "user_message": {"id": user_message.id, "is_command": is_command},
                 "memories": selected_memories,
                 "soul_preferences": soul_preferences,
                 "open_loops": selected_open_loops,
@@ -371,7 +371,7 @@ class ConversationService:
                 if isinstance(raw_mutation, MemoryMutation)
                 else MemoryMutation(**raw_mutation)
             )
-            memory, _ = await memory_service.upsert_memory(
+            memory, _outcome = await memory_service.upsert_memory(
                 user.id,
                 mutation,
                 [user_message.id],

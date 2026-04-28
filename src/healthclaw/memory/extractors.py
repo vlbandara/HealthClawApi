@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from healthclaw.core.config import get_settings
@@ -8,13 +9,18 @@ from healthclaw.core.tracing import start_span
 from healthclaw.integrations.openrouter import OpenRouterClient
 from healthclaw.schemas.memory import MemoryMutation
 
+logger = logging.getLogger(__name__)
+
 NAME_RE = re.compile(
     r"\b(?:my name is|call me)\s+(?P<name>[A-Za-z][A-Za-z .'-]{1,60})(?:[.!?]|$)",
     re.I,
 )
 GOAL_RE = re.compile(
-    r"\b(?:my goal is|i want to|i'm trying to|im trying to|i am trying to)\s+"
-    r"(?P<goal>[^.!\n]+)",
+    r"\b(?:"
+    r"my goal is|i want to|i need to|"
+    r"(?:i'?m|i am|im)?\s*trying to|"
+    r"i'?d like to|i would like to"
+    r")\s+(?P<goal>[^.!\n]+)",
     re.I,
 )
 PREFERENCE_RE = re.compile(r"\b(?:i prefer|please be|talk to me)\s+(?P<pref>[^.!\n]+)", re.I)
@@ -177,19 +183,29 @@ async def extract_memory_mutations_enriched(content: str) -> list[MemoryMutation
         {"role": "user", "content": content},
     ]
     async with start_span(
-                "memory.extract.llm",
-                attributes={"model_role": "extract"},
-            ):
-                try:
-                    result = await client.chat_completion(
-                        messages,
-                        max_tokens=500,
-                        temperature=0,
-                        metadata={"model_role": "extract"},
-                    )
-                    raw_items = json.loads(result.content)
-                except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
-                    return mutations
+        "memory.extract.llm",
+        attributes={"model_role": "extract"},
+    ):
+        result = None
+        try:
+            result = await client.chat_completion(
+                messages,
+                max_tokens=500,
+                temperature=0,
+                metadata={"model_role": "extract"},
+            )
+            raw_items = json.loads(result.content)
+        except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
+            from opentelemetry import trace as otel_trace
+
+            span = otel_trace.get_current_span()
+            span.set_attribute("parse_error", True)
+            raw_content = getattr(result, "content", "")[:200] if result else ""
+            logger.warning(
+                "memory_extract_parse_error",
+                extra={"raw_content": raw_content},
+            )
+            return mutations
     if not isinstance(raw_items, list):
         return mutations
 
