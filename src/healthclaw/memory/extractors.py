@@ -4,6 +4,7 @@ import json
 import re
 
 from healthclaw.core.config import get_settings
+from healthclaw.core.tracing import start_span
 from healthclaw.integrations.openrouter import OpenRouterClient
 from healthclaw.schemas.memory import MemoryMutation
 
@@ -175,11 +176,20 @@ async def extract_memory_mutations_enriched(content: str) -> list[MemoryMutation
         },
         {"role": "user", "content": content},
     ]
-    try:
-        result = await client.chat_completion(messages, max_tokens=500, temperature=0)
-        raw_items = json.loads(result.content)
-    except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
-        return mutations
+    async with start_span(
+                "memory.extract.llm",
+                attributes={"model_role": "extract"},
+            ):
+                try:
+                    result = await client.chat_completion(
+                        messages,
+                        max_tokens=500,
+                        temperature=0,
+                        metadata={"model_role": "extract"},
+                    )
+                    raw_items = json.loads(result.content)
+                except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
+                    return mutations
     if not isinstance(raw_items, list):
         return mutations
 

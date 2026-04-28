@@ -371,7 +371,7 @@ class ConversationService:
                 if isinstance(raw_mutation, MemoryMutation)
                 else MemoryMutation(**raw_mutation)
             )
-            memory = await memory_service.upsert_memory(
+            memory, _ = await memory_service.upsert_memory(
                 user.id,
                 mutation,
                 [user_message.id],

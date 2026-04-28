@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from healthclaw.agent.time_context import TimeContext
 from healthclaw.core.config import Settings
+from healthclaw.core.tracing import start_span
 from healthclaw.db.models import HeartbeatJob, OpenLoop, User
 
 logger = logging.getLogger(__name__)
@@ -109,15 +110,28 @@ async def decide(
         )
 
     try:
-        result = await client.chat_completion(
-            messages=[
-                {"role": "system", "content": DECISION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=200,
-            temperature=0.0,
-            model=settings.openrouter_decision_model,
-        )
+        async with start_span(
+                "openrouter.chat",
+                attributes={
+                    "model_role": "decision",
+                    "user_id": user.id,
+                    "job_kind": job.kind,
+                },
+            ):
+                result = await client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": DECISION_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=200,
+                    temperature=0.0,
+                    model=settings.openrouter_decision_model,
+                    metadata={
+                        "model_role": "decision",
+                        "user_id": user.id,
+                        "job_kind": job.kind,
+                    },
+                )
         raw = result.content.strip()
         # Strip markdown fences
         if raw.startswith("```"):

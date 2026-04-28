@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from healthclaw.core.config import Settings
+from healthclaw.core.tracing import start_span
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -52,6 +53,7 @@ class OpenRouterClient:
         max_tokens: int = 180,
         temperature: float = 0.4,
         model: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> OpenRouterResult:
         """Call a chat model. Pass `model` to use a specific model instead of the fallback chain."""
         if not self.enabled:
@@ -59,36 +61,53 @@ class OpenRouterClient:
 
         model_list = [model] if model else self.chat_models()
         last_error: Exception | None = None
-        async with httpx.AsyncClient(timeout=30) as client:
-            for candidate_model in model_list:
-                try:
-                    response = await client.post(
-                        OPENROUTER_CHAT_URL,
-                        headers=self._headers(),
-                        json={
-                            "model": candidate_model,
-                            "messages": messages,
-                            "max_tokens": max_tokens,
-                            "temperature": temperature,
-                        },
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                    content = payload["choices"][0]["message"].get("content") or ""
-                    if content.strip():
-                        return OpenRouterResult(
-                            content=content.strip(),
-                            model=payload.get("model") or candidate_model,
-                            usage=payload.get("usage") or {},
+        attempt_index = 0
+        async with start_span("openrouter.chat", attributes=metadata) as span:
+            async with httpx.AsyncClient(timeout=30) as client:
+                for candidate_model in model_list:
+                    attempt_index += 1
+                    try:
+                        response = await client.post(
+                            OPENROUTER_CHAT_URL,
+                            headers=self._headers(),
+                            json={
+                                "model": candidate_model,
+                                "messages": messages,
+                                "max_tokens": max_tokens,
+                                "temperature": temperature,
+                            },
                         )
-                    last_error = RuntimeError(
-                        f"OpenRouter returned empty content for {candidate_model}"
-                    )
-                except (KeyError, IndexError, httpx.HTTPError, RuntimeError) as exc:
-                    last_error = exc
-                    continue
+                        response.raise_for_status()
+                        payload = response.json()
+                        content = payload["choices"][0]["message"].get("content") or ""
+                        if content.strip():
+                            usage = payload.get("usage") or {}
+                            span.set_attribute(
+                                "usage.prompt_tokens",
+                                usage.get("prompt_tokens", 0),
+                            )
+                            span.set_attribute(
+                                "usage.completion_tokens",
+                                usage.get("completion_tokens", 0),
+                            )
+                            span.set_attribute(
+                                "model_resolved",
+                                payload.get("model") or candidate_model,
+                            )
+                            span.set_attribute("attempt_index", attempt_index)
+                            return OpenRouterResult(
+                                content=content.strip(),
+                                model=payload.get("model") or candidate_model,
+                                usage=usage,
+                            )
+                        last_error = RuntimeError(
+                            f"OpenRouter returned empty content for {candidate_model}"
+                        )
+                    except (KeyError, IndexError, httpx.HTTPError, RuntimeError) as exc:
+                        last_error = exc
+                        continue
 
-        raise RuntimeError("OpenRouter chat completion failed") from last_error
+            raise RuntimeError("OpenRouter chat completion failed") from last_error
 
     async def transcribe_audio(
         self,

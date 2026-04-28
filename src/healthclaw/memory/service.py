@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import case, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from healthclaw.core.tracing import start_span
 from healthclaw.db.models import Memory, MemoryRevision, PolicyProposal
 from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.schemas.memory import MemoryMutation
@@ -74,7 +75,17 @@ class MemoryService:
             from healthclaw.memory.retrieval import HybridRetriever
 
             retriever = HybridRetriever(self.session, self._embedding_client)
-            return await retriever.retrieve(user_id, query, limit=limit, kinds=kinds)
+            async with start_span(
+                "memory.retrieve",
+                attributes={
+                    "user_id": user_id,
+                    "query_len": len(query),
+                    "limit": limit,
+                },
+            ) as span:
+                result = await retriever.retrieve(user_id, query, limit=limit, kinds=kinds)
+                span.set_attribute("result_count", len(result))
+                return result
 
         # Lexical-only fallback (used when no embedding client is wired in)
         memories = [
@@ -216,6 +227,27 @@ class MemoryService:
         mutation: MemoryMutation,
         source_message_ids: list[str],
         *,
+        trace_id: str | None = None,
+    ) -> tuple[Memory, str]:
+        outcome = "skipped"
+        async with start_span(
+            "memory.upsert",
+            attributes={
+                "kind": mutation.kind,
+                "key": mutation.key,
+                "outcome": outcome,
+            },
+        ) as span:
+            result = await self._upsert_memory_impl(user_id, mutation, source_message_ids, trace_id)
+            outcome = "created" if result.revision_count == 1 else "updated"
+            span.set_attribute("outcome", outcome)
+            return result, outcome
+
+    async def _upsert_memory_impl(
+        self,
+        user_id: str,
+        mutation: MemoryMutation,
+        source_message_ids: list[str],
         trace_id: str | None = None,
     ) -> Memory:
         if mutation.kind == "policy" and mutation.key in HIGH_IMPACT_POLICY_KEYS:

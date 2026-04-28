@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.core.config import Settings
+from healthclaw.core.tracing import start_span
 from healthclaw.db.models import Message, UserMemoryCursor
 from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.memory import MemoryMutation
@@ -118,15 +119,26 @@ class ConsolidatorService:
             return 0
 
         try:
-            result = await client.chat_completion(
-                messages=[
-                    {"role": "system", "content": CONSOLIDATION_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=600,
-                temperature=0.2,
-                model=self.settings.openrouter_dream_model,
-            )
+            async with start_span(
+                "openrouter.chat",
+                attributes={
+                    "model_role": "consolidate",
+                    "user_id": user_id,
+                },
+            ):
+                result = await client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": CONSOLIDATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=600,
+                    temperature=0.2,
+                    model=self.settings.openrouter_dream_model,
+                    metadata={
+                        "model_role": "consolidate",
+                        "user_id": user_id,
+                    },
+                )
             raw = result.content.strip()
             # Strip markdown code fences if present
             if raw.startswith("```"):

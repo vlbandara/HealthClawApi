@@ -6,6 +6,7 @@ from typing import Any
 
 from healthclaw.agent.time_context import TimeContext
 from healthclaw.core.config import Settings
+from healthclaw.core.tracing import start_span_sync
 
 MemoryLike = dict[str, Any]
 MessageLike = dict[str, Any]
@@ -102,57 +103,70 @@ class ContextHarness:
         thread_summary: str = "",
         mode: str = "active",
     ) -> PromptContext:
-        query_tokens = _tokenize(user_content)
-        selected_memories, dropped_memories, memory_chars = self._select_memories(
-            memories,
-            query_tokens=query_tokens,
-        )
-        selected_loops, dropped_loops, open_loop_chars = self._select_open_loops(
-            open_loops,
-            query_tokens=query_tokens,
-        )
-        packed_recent, digest, dropped_recent, recent_chars = self._pack_recent_messages(
-            recent_messages,
-            thread_summary=thread_summary,
-        )
-        selected_documents, doc_sections, dropped_sections, document_chars = self._select_documents(
-            memory_documents,
-            query_tokens=query_tokens,
-            selected_memories=selected_memories,
-        )
-        relationship_signals = _relationship_signals(user_context, time_context)
-        metadata = {
-            "mode": mode,
-            "selected_memory_keys": [
-                f"{memory.get('kind')}:{memory.get('key')}" for memory in selected_memories
-            ],
-            "dropped_memories": dropped_memories[:8],
-            "selected_open_loop_ids": [str(loop.get("id") or "") for loop in selected_loops],
-            "dropped_open_loops": dropped_loops[:6],
-            "selected_document_sections": doc_sections[:10],
-            "dropped_document_sections": dropped_sections[:10],
-            "recent_messages_selected": len(packed_recent),
-            "recent_messages_dropped": dropped_recent,
-            "thread_summary_included": bool(digest),
-            "relationship_signals": relationship_signals,
-            "budget_usage": {
-                "memories": memory_chars,
-                "open_loops": open_loop_chars,
-                "recent_messages": recent_chars,
-                "thread_summary": len(digest),
-                "documents": document_chars,
+        with start_span_sync(
+            "harness.build",
+            attributes={
+                "query_len": len(user_content),
+                "mode": mode,
+                "memory_count": len(memories),
+                "recent_message_count": len(recent_messages),
+                "open_loop_count": len(open_loops),
+                "document_count": len(memory_documents),
             },
-        }
-        return PromptContext(
-            memories=selected_memories,
-            recent_messages=packed_recent,
-            open_loops=selected_loops,
-            memory_documents=selected_documents,
-            thread_summary=digest,
-            relationship_signals=relationship_signals,
-            budget_usage=metadata["budget_usage"],
-            metadata=metadata,
-        )
+        ):
+            query_tokens = _tokenize(user_content)
+            selected_memories, dropped_memories, memory_chars = self._select_memories(
+                memories,
+                query_tokens=query_tokens,
+            )
+            selected_loops, dropped_loops, open_loop_chars = self._select_open_loops(
+                open_loops,
+                query_tokens=query_tokens,
+            )
+            packed_recent, digest, dropped_recent, recent_chars = self._pack_recent_messages(
+                recent_messages,
+                thread_summary=thread_summary,
+            )
+            selected_documents, doc_sections, dropped_sections, document_chars = (
+                self._select_documents(
+                    memory_documents,
+                    query_tokens=query_tokens,
+                    selected_memories=selected_memories,
+                )
+            )
+            relationship_signals = _relationship_signals(user_context, time_context)
+            metadata = {
+                "mode": mode,
+                "selected_memory_keys": [
+                    f"{memory.get('kind')}:{memory.get('key')}" for memory in selected_memories
+                ],
+                "dropped_memories": dropped_memories[:8],
+                "selected_open_loop_ids": [str(loop.get("id") or "") for loop in selected_loops],
+                "dropped_open_loops": dropped_loops[:6],
+                "selected_document_sections": doc_sections[:10],
+                "dropped_document_sections": dropped_sections[:10],
+                "recent_messages_selected": len(packed_recent),
+                "recent_messages_dropped": dropped_recent,
+                "thread_summary_included": bool(digest),
+                "relationship_signals": relationship_signals,
+                "budget_usage": {
+                    "memories": memory_chars,
+                    "open_loops": open_loop_chars,
+                    "recent_messages": recent_chars,
+                    "thread_summary": len(digest),
+                    "documents": document_chars,
+                },
+            }
+            return PromptContext(
+                memories=selected_memories,
+                recent_messages=packed_recent,
+                open_loops=selected_loops,
+                memory_documents=selected_documents,
+                thread_summary=digest,
+                relationship_signals=relationship_signals,
+                budget_usage=metadata["budget_usage"],
+                metadata=metadata,
+            )
 
     def _select_memories(
         self,

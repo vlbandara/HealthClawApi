@@ -5,9 +5,11 @@ from healthclaw.agent.response import generate_companion_response
 from healthclaw.agent.safety import classify_safety
 from healthclaw.agent.state import AgentState
 from healthclaw.agent.time_context import TimeContext, build_time_context
+from healthclaw.core.tracing import traced_node
 from healthclaw.memory.extractors import extract_memory_mutations_enriched
 
 
+@traced_node("input_normalization")
 async def normalize_input(state: AgentState) -> AgentState:
     state["user_content"] = " ".join(state["user_content"].strip().split())
     state["trace_metadata"] = {
@@ -17,6 +19,7 @@ async def normalize_input(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("safety_and_scope")
 async def classify_scope_and_safety(state: AgentState) -> AgentState:
     safety = classify_safety(state["user_content"])
     state["safety"] = {
@@ -32,6 +35,7 @@ async def classify_scope_and_safety(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("time_context")
 async def assemble_time_context(state: AgentState) -> AgentState:
     thread_last = state.get("trace_metadata", {}).get("last_interaction_at")
     context = build_time_context(state["user"], last_interaction_at=thread_last)
@@ -43,6 +47,7 @@ async def assemble_time_context(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("memory_retrieval")
 async def retrieve_memory(state: AgentState) -> AgentState:
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
@@ -54,6 +59,7 @@ async def retrieve_memory(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("companion_response")
 async def generate_response(state: AgentState) -> AgentState:
     safety = classify_safety(state["user_content"])
     time_ctx = TimeContext(**state["time_context"])
@@ -92,6 +98,7 @@ async def generate_response(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("proactive_policy")
 async def decide_proactivity(state: AgentState) -> AgentState:
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
@@ -105,6 +112,7 @@ async def decide_proactivity(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("memory_update")
 async def update_memory(state: AgentState) -> AgentState:
     state["memory_mutations"] = [
         mutation.model_dump(mode="json")
@@ -131,6 +139,7 @@ async def update_memory(state: AgentState) -> AgentState:
     return state
 
 
+@traced_node("trace_eval_logging")
 async def log_trace(state: AgentState) -> AgentState:
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
