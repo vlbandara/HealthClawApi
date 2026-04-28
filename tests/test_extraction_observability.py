@@ -9,7 +9,9 @@ from healthclaw.integrations.openrouter import OpenRouterResult
 from healthclaw.memory.extractors import extract_memory_mutations_enriched
 
 
-async def test_parse_error_sets_span_attribute_and_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
+async def test_parse_error_sets_span_attribute_and_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def fake_chat_completion(self, messages, **kwargs):
         return OpenRouterResult(
             content="not json at all",

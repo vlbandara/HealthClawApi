@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.agent.context_harness import ContextHarness
 from healthclaw.agent.graph import agent_graph
+from healthclaw.agent.thread_digest import compact_thread_summary
 from healthclaw.agent.time_context import build_time_context
 from healthclaw.core.config import get_settings
 from healthclaw.core.tracing import new_trace_id, redacted_payload
@@ -399,7 +400,7 @@ class ConversationService:
                 )
         await MarkdownMemoryService(self.session).refresh_for_user(user)
         await heartbeat_service.ensure_refresh_jobs(user.id)
-        self._update_thread_summary(thread, event.content, assistant_message.content)
+        await self._update_thread_summary(thread, event.content, assistant_message.content, user.id)
         await self._record_usage(user, state.get("trace_metadata", {}).get("generation", {}))
 
         self.session.add(
@@ -983,12 +984,51 @@ class ConversationService:
             quota.token_budget = user.monthly_llm_token_budget
             quota.cost_cents_used += 0
 
-    @staticmethod
-    def _update_thread_summary(
+    async def _update_thread_summary(
+        self,
         thread: ConversationThread,
         user_content: str,
         response: str,
+        user_id: str,
     ) -> None:
-        snippet = f"User: {user_content[:160]} | Assistant: {response[:160]}"
-        existing = thread.summary or ""
-        thread.summary = f"{existing}\n{snippet}"[-2000:].strip()
+        count_result = await self.session.execute(
+            select(func.count(Message.id)).where(
+                Message.thread_id == thread.id,
+                Message.role == "user",
+            )
+        )
+        turn_count = count_result.scalar() or 0
+
+        if turn_count % self.settings.thread_summary_compact_every != 0:
+            snippet = f"User: {user_content[:160]} | Assistant: {response[:160]}"
+            existing = thread.summary or ""
+            thread.summary = f"{existing}\n{snippet}"[-2000:].strip()
+            return
+
+        recent_result = await self.session.execute(
+            select(Message)
+            .where(
+                Message.thread_id == thread.id,
+                Message.role.in_(["user", "assistant"]),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(self.settings.thread_summary_compact_every * 2)
+        )
+        recent_messages = list(reversed(list(recent_result.scalars())))
+        recent_turns = [
+            {"role": msg.role, "content": msg.content[:300]} for msg in recent_messages
+        ]
+
+        try:
+            digest = await compact_thread_summary(
+                prior_summary=thread.summary or "",
+                recent_turns=recent_turns,
+                user_id=user_id,
+                thread_id=thread.id,
+            )
+            thread.summary = digest[: self.settings.thread_summary_max_chars]
+        except Exception as exc:
+            from opentelemetry import trace
+            tracer = trace.get_tracer("healthclaw")
+            with tracer.start_as_current_span("thread.compact.error") as span:
+                span.record_exception(exc)

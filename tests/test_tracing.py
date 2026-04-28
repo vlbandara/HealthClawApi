@@ -33,6 +33,7 @@ def in_memory_exporter():
 @pytest.fixture
 def configured_tracer(in_memory_exporter):
     from opentelemetry import trace as otel_trace
+
     from healthclaw.core import tracing
 
     resource = Resource.create({"service.name": "healthclaw"})

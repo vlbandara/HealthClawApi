@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -112,9 +112,10 @@ async def test_duplicate_episode_prefix_skipped():
         _mocked_chat_completion,
     ):
         shared_prefix = (
-            "feeling stressed about work today, can't focus on anything and need to take a break "
-            "because it's been overwhelming lately and I feel like I'm losing control of everything "
-            "that needs to get done before the end of this week"
+            "feeling stressed about work today, can't focus on anything "
+            "and need to take a break because it's been overwhelming lately "
+            "and I feel like I'm losing control of everything that needs "
+            "to get done before the end of this week"
         )
         prior_content = shared_prefix + " and I need to rest more"
         state = _make_state(
