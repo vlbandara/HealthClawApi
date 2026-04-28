@@ -4,8 +4,6 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter
 
 from healthclaw.agent.graph import agent_graph
@@ -34,16 +32,9 @@ def in_memory_exporter():
 def configured_tracer(in_memory_exporter):
     from opentelemetry import trace as otel_trace
 
-    from healthclaw.core import tracing
-
-    resource = Resource.create({"service.name": "healthclaw"})
-    provider = TracerProvider(resource=resource)
+    provider = otel_trace.get_tracer_provider()
     provider.add_span_processor(SimpleSpanProcessor(in_memory_exporter))
-    otel_trace.set_tracer_provider(provider)
-    tracing._tracer = None
     yield provider
-    otel_trace.set_tracer_provider(TracerProvider())
-    tracing._tracer = None
 
 
 def _make_time_context() -> TimeContext:
@@ -128,28 +119,35 @@ async def test_node_spans_emitted_in_order(configured_tracer, in_memory_exporter
 
 
 async def test_openrouter_chat_span_emitted(configured_tracer, in_memory_exporter):
-    async def fake_chat_completion(self, messages, **kwargs):
-        return OpenRouterResult(
-            content="Test response",
-            model="moonshotai/kimi-k2.6",
-            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        )
+    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import patch as mock_patch
 
-    with patch(
-        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
-        fake_chat_completion,
-    ):
-        state = _make_minimal_state(user_id="u-span-test")
-        await agent_graph.ainvoke(state)
+    import httpx
 
-        configured_tracer.force_flush()
-        exported_spans = in_memory_exporter.spans
-        openrouter_spans = [s for s in exported_spans if s.name == "openrouter.chat"]
-        assert len(openrouter_spans) >= 1
+    from healthclaw.core.config import get_settings
+    from healthclaw.integrations.openrouter import OpenRouterClient
 
-        chat_span = openrouter_spans[0]
-        attrs = {k: v for k, v in chat_span.attributes.items()}
-        assert attrs.get("model_role") == "chat"
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "Test response"}}],
+        "model": "moonshotai/kimi-k2.6",
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+    with mock_patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
+        with mock_patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+            get_settings.cache_clear()
+            client = OpenRouterClient(get_settings())
+            await client.chat_completion(
+                [{"role": "user", "content": "hello"}],
+                metadata={"model_role": "chat", "node": "companion_response"},
+            )
+            get_settings.cache_clear()
+
+    openrouter_spans = [s for s in in_memory_exporter.spans if s.name == "openrouter.chat"]
+    assert len(openrouter_spans) >= 1
+    assert openrouter_spans[0].attributes.get("model_role") == "chat"
 
 
 async def test_harness_build_span_emitted(configured_tracer, in_memory_exporter):

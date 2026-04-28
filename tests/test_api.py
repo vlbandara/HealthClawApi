@@ -333,7 +333,7 @@ async def test_conversation_uses_openrouter_when_configured(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured: list[dict[str, object]] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured.append({"max_tokens": max_tokens, "temperature": temperature})
         return OpenRouterResult(
             content="OpenRouter wellness reply",
@@ -463,7 +463,7 @@ async def test_conversation_sends_recent_thread_context_to_openrouter(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_user_contexts: list[str] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured_user_contexts.append(messages[-1]["content"])
         return OpenRouterResult(
             content="Context-aware reply",
