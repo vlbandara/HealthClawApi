@@ -18,9 +18,6 @@ logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 T = TypeVar("T")
 
-_tracer: trace.Tracer | None = None
-
-
 def new_trace_id() -> str:
     return uuid.uuid4().hex
 
@@ -50,10 +47,7 @@ def _redacted_value(value: Any, *, include_raw_content: bool) -> Any:
 
 
 def _get_tracer() -> trace.Tracer:
-    global _tracer
-    if _tracer is None:
-        _tracer = trace.get_tracer("healthclaw")
-    return _tracer
+    return trace.get_tracer("healthclaw")
 
 
 @asynccontextmanager
