@@ -23,6 +23,7 @@ class CloseOpenLoopAction(BaseModel):
     type: Literal["close_open_loop"]
     id: str
     summary: str = Field(..., max_length=500)
+    outcome: Literal["completed", "dropped", "reframed"]
 
 
 class NoneAction(BaseModel):

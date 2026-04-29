@@ -262,7 +262,8 @@ def _action_memory_text(action_data: dict) -> str:
     if action_type == "close_open_loop":
         loop_id = action_data.get("id", "")
         summary = action_data.get("summary", "")
-        return f"closed loop: {loop_id} - {summary}".strip()
+        outcome = action_data.get("outcome", "")
+        return f"closed loop ({outcome}): {loop_id} - {summary}".strip()
     return action_type
 
 

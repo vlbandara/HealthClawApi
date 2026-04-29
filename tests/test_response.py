@@ -136,3 +136,50 @@ async def test_generate_companion_response_includes_conversation_digest(monkeypa
     assert "# Conversation Digest" in prompt
     assert "sleep slipped after late-night scrolling" in prompt
     get_settings.cache_clear()
+
+
+async def test_generate_companion_response_includes_open_loop_ids(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    captured_messages: list[dict[str, object]] = []
+
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
+        captured_messages.extend(messages)
+        return OpenRouterResult(
+            content="Loop-aware reply",
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 9},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+
+    generation, _metadata = await generate_companion_response(
+        user_content="I actually finished that.",
+        safety=SafetyDecision(category="wellness", severity="low", action="support"),
+        time_context=make_time_context(),
+        memories=[],
+        open_loops=[
+            {
+                "id": "loop-1",
+                "title": "go for a walk tonight",
+                "kind": "commitment",
+                "age_hours": 20.0,
+            }
+        ],
+        user_context={"id": "u-open-loop-prompt", "timezone": "UTC", "trust_level": 0.5},
+    )
+
+    system_prompt = str(captured_messages[0]["content"])
+    user_prompt = str(captured_messages[-1]["content"])
+    assert generation.message == "Loop-aware reply"
+    assert 'close_open_loop, and none' in system_prompt
+    assert 'exactly matches one listed under Open Loops' in system_prompt
+    assert 'outcome" of "completed", "dropped", or "reframed"' in system_prompt
+    assert "id=loop-1" in user_prompt
+    assert "title=go for a walk tonight" in user_prompt
+    assert "kind=commitment" in user_prompt
+    assert "age_hours=20.0" in user_prompt
+    get_settings.cache_clear()

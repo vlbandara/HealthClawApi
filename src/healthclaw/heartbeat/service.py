@@ -19,6 +19,7 @@ from healthclaw.db.models import (
     UserEngagementState,
 )
 from healthclaw.engagement.metrics import build_relationship_context
+from healthclaw.heartbeat.profile import parse_heartbeat_md
 from healthclaw.memory.service import MemoryService
 
 
@@ -257,7 +258,7 @@ class HeartbeatService:
             job.kind == "autonomous_tick"
             and float(relationship.get("sentiment_ema") or 0.0) < -0.5
             and not stale_open_loop
-            and not user.heartbeat_md.strip()
+            and not parse_heartbeat_md(user.heartbeat_md).standing_intent
         ):
             return "skip", None, "low_sentiment_without_trigger", decision_input, None
 
@@ -321,16 +322,7 @@ class HeartbeatService:
 
     @staticmethod
     def _allows_long_silence_ping(heartbeat_md: str) -> bool:
-        normalized = heartbeat_md.lower()
-        return any(
-            marker in normalized
-            for marker in (
-                "allow_long_silence",
-                "allow long-silence",
-                "allow long silence",
-                "long_silence_ok",
-            )
-        )
+        return parse_heartbeat_md(heartbeat_md).allow_long_silence is True
 
     async def render_job(self, job: HeartbeatJob, action_override: str | None = None) -> str:
         # Ritual: use the action_override from the decision gate, or fall back to the template
@@ -392,7 +384,8 @@ class HeartbeatService:
         return {"scheduled": scheduled, "skipped_no_trigger": skipped_no_trigger}
 
     async def _autonomous_trigger(self, user: User, now: datetime) -> dict | None:
-        heartbeat_intent = bool(user.heartbeat_md.strip())
+        heartbeat_profile = parse_heartbeat_md(user.heartbeat_md)
+        heartbeat_intent = bool(heartbeat_profile.standing_intent)
         loop_result = await self.session.execute(
             select(OpenLoop)
             .where(
@@ -404,7 +397,7 @@ class HeartbeatService:
             .limit(1)
         )
         stale_loop = loop_result.scalar_one_or_none()
-        dream_nominated = "wake:" in user.heartbeat_md.lower()
+        dream_nominated = bool(heartbeat_profile.wake_text)
         if not (heartbeat_intent or stale_loop is not None or dream_nominated):
             return None
         payload: dict[str, object] = {
@@ -412,6 +405,8 @@ class HeartbeatService:
             "heartbeat_intent": heartbeat_intent,
             "dream_nominated": dream_nominated,
         }
+        if heartbeat_profile.wake_text:
+            payload["wake_text"] = heartbeat_profile.wake_text
         if stale_loop is not None:
             payload["open_loop_id"] = stale_loop.id
             payload["open_loop_title"] = stale_loop.title

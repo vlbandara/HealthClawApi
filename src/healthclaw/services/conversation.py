@@ -16,6 +16,7 @@ from healthclaw.db.models import (
     AgentCheckpoint,
     ChannelAccount,
     ConversationThread,
+    HeartbeatJob,
     InboundEvent,
     Message,
     OpenLoop,
@@ -33,6 +34,7 @@ from healthclaw.engagement.metrics import (
     is_meaningful_exchange,
     update_meaningful_engagement,
 )
+from healthclaw.heartbeat.profile import canonicalize_heartbeat_md
 from healthclaw.heartbeat.rituals import RitualService
 from healthclaw.heartbeat.service import HeartbeatService
 from healthclaw.heartbeat.streaks import RitualStreakService
@@ -528,20 +530,45 @@ class ConversationService:
                         continue
                     open_loop.status = "closed"
                     open_loop.closed_at = utc_now()
+                    open_loop.metadata_ = {
+                        **(open_loop.metadata_ or {}),
+                        "closed_summary": action.summary,
+                        "closed_outcome": action.outcome,
+                    }
                     loop_thread = await self.session.get(ConversationThread, open_loop.thread_id)
                     if loop_thread is not None and loop_thread.open_loop_count > 0:
                         loop_thread.open_loop_count -= 1
+                    open_jobs = await self.session.execute(
+                        select(HeartbeatJob).where(
+                            HeartbeatJob.open_loop_id == open_loop.id,
+                            HeartbeatJob.status == "scheduled",
+                        )
+                    )
+                    for job in open_jobs.scalars():
+                        job.status = "suppressed"
+                        job.last_error = "open_loop_closed"
                     state.setdefault("memory_mutations", []).append(
                         {
                             "kind": "relationship",
                             "key": f"closed_loop:{open_loop.id}",
-                            "value": {"summary": action.summary, "title": open_loop.title},
+                            "value": {
+                                "summary": action.summary,
+                                "title": open_loop.title,
+                                "outcome": action.outcome,
+                            },
                             "confidence": 0.7,
                             "reason": "User confirmed completion of open loop.",
                             "layer": "relationship",
                         }
                     )
-                    executed.append({"type": action_type, "id": action.id})
+                    executed.append(
+                        {
+                            "type": action_type,
+                            "id": action.id,
+                            "summary": action.summary,
+                            "outcome": action.outcome,
+                        }
+                    )
             except Exception:
                 dropped.append({"type": action_type or "unknown", "reason": "execution_error"})
 
@@ -767,7 +794,7 @@ class ConversationService:
             return (
                 "Heartbeat intent cleared. Autonomous outreach will rely on rituals and open loops."
             )
-        user.heartbeat_md = text[:4000]
+        user.heartbeat_md = canonicalize_heartbeat_md(text)
         user.heartbeat_md_updated_at = utc_now()
         return "Heartbeat intent saved. I will use it as standing guidance for proactive check-ins."
 

@@ -24,6 +24,8 @@ ACTION_OUTPUT_CONTRACT = (
     "Output a single JSON object with exactly these keys: "
     '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation]}. '
     "Allowed action types are create_reminder, create_open_loop, close_open_loop, and none. "
+    'For close_open_loop, use an "id" that exactly matches one listed under Open Loops and '
+    'an "outcome" of "completed", "dropped", or "reframed". '
     "Only state that you set, created, or scheduled something "
     "when the matching action appears in actions. "
     "If timing/details are uncertain, ask the user instead of guessing."
@@ -203,11 +205,17 @@ async def generate_companion_response(
         time_context,
         relationship_signals=relationship_signals,
     )
-    open_loop_lines = [
-        f"- {loop.get('title')}"
-        for loop in (open_loops or [])[:10]
-        if loop.get("title")
-    ]
+    open_loop_lines = []
+    for loop in (open_loops or [])[:10]:
+        if not loop.get("title"):
+            continue
+        open_loop_lines.append(
+            "- "
+            f"id={loop.get('id')} | "
+            f"title={loop.get('title')} | "
+            f"kind={loop.get('kind')} | "
+            f"age_hours={loop.get('age_hours')}"
+        )
     open_loop_context = "\n".join(open_loop_lines) or "- none"
 
     recent_messages = recent_messages or []
