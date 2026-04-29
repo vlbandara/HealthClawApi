@@ -15,6 +15,7 @@ from healthclaw.db.models import (
     UserSoulPreference,
     utc_now,
 )
+from healthclaw.heartbeat.profile import canonicalize_heartbeat_md
 from healthclaw.memory.documents import MarkdownMemoryService
 from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.memory import (
@@ -199,7 +200,7 @@ async def patch_heartbeat_profile(
 ) -> HeartbeatProfileRead:
     user = await ConversationService(session).ensure_user(user_id)
     if payload.heartbeat_md is not None:
-        user.heartbeat_md = payload.heartbeat_md.strip()[:4000]
+        user.heartbeat_md = canonicalize_heartbeat_md(payload.heartbeat_md)
         user.heartbeat_md_updated_at = utc_now() if user.heartbeat_md else None
     await session.commit()
     refreshed = await session.get(User, user_id)

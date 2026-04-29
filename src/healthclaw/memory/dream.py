@@ -21,6 +21,7 @@ from healthclaw.db.models import (
     UserSoulPreference,
     utc_now,
 )
+from healthclaw.heartbeat.profile import merge_dream_heartbeat_md
 from healthclaw.memory.documents import MarkdownMemoryService
 from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.memory import MemoryMutation
@@ -36,7 +37,9 @@ small source-of-truth updates that make the companion more continuous and less g
 Return ONLY valid JSON with a top-level "changes" array. Each change must be one of:
 {"target_type":"soul_preferences","target_key":"style","value":{"tone_preferences":{},"response_preferences":{}},"reason":"...","confidence":0.0-1.0}
 {"target_type":"memory","target_key":"kind:key","value":{"kind":"preference|profile|goal|routine|friction|relationship|episode","key":"snake_case","value":{"text":"..."},"confidence":0.0-1.0,"reason":"..."},"reason":"...","confidence":0.0-1.0}
-{"target_type":"heartbeat_md","target_key":"standing_intents","value":{"text":"..."},"reason":"...","confidence":0.0-1.0}
+{"target_type":"heartbeat_md","target_key":"standing_intents",
+  "value":{"text":"wake: ...\nallow_long_silence: true|false\n(optional standing prose)"},
+  "reason":"...","confidence":0.0-1.0}
 {"target_type":"engagement","target_key":"trust_level","value":{"trust_level":0.0-1.0},"reason":"...","confidence":0.0-1.0}
 
 Never edit safety, medical, crisis, consent, quiet-hour, diagnosis, treatment, medication, or
@@ -278,7 +281,7 @@ class DreamService:
         if not text:
             return None, False
         previous = {"heartbeat_md": user.heartbeat_md}
-        user.heartbeat_md = text[:4000]
+        user.heartbeat_md = merge_dream_heartbeat_md(user.heartbeat_md, text)
         user.heartbeat_md_updated_at = utc_now()
         return previous, True
 

@@ -19,7 +19,12 @@ def test_action_schema_accepts_variants() -> None:
         {"type": "create_open_loop", "title": "go for a walk", "kind": "commitment"}
     )
     close_loop = adapter.validate_python(
-        {"type": "close_open_loop", "id": "loop-1", "summary": "done"}
+        {
+            "type": "close_open_loop",
+            "id": "loop-1",
+            "summary": "done",
+            "outcome": "completed",
+        }
     )
     none_action = adapter.validate_python({"type": "none"})
 
@@ -35,3 +40,5 @@ def test_action_schema_rejects_invalid_payloads() -> None:
         adapter.validate_python({"type": "bad_type"})
     with pytest.raises(ValidationError):
         adapter.validate_python({"type": "create_reminder", "text": "missing due date"})
+    with pytest.raises(ValidationError):
+        adapter.validate_python({"type": "close_open_loop", "id": "loop-1", "summary": "done"})
