@@ -121,8 +121,10 @@ class HeartbeatService:
         )
         users = list(result.scalars())
         refresh_jobs = 0
+        internal_jobs = 0
         for user in users:
             refresh_jobs += await self.ensure_refresh_jobs(user.id, now=now)
+            internal_jobs += await self.schedule_internal_jobs(user, now=now)
 
         loop_result = await self.session.execute(
             select(OpenLoop).where(
@@ -142,7 +144,57 @@ class HeartbeatService:
             if before.scalar_one_or_none() is None:
                 await self.ensure_job_for_open_loop(open_loop)
                 open_loop_jobs += 1
-        return {"refresh_jobs": refresh_jobs, "open_loop_jobs": open_loop_jobs}
+        return {
+            "refresh_jobs": refresh_jobs,
+            "open_loop_jobs": open_loop_jobs,
+            "internal_jobs": internal_jobs,
+        }
+
+    async def schedule_internal_jobs(self, user: User, *, now: datetime) -> int:
+        """Idempotently create one dream + one consolidate job per user per day,
+        due at the start of their quiet window. Returns number of new jobs created."""
+        import zoneinfo
+
+        time_context = build_time_context(user, now=now)
+
+        # Compute UTC time of the next quiet-window start
+        if time_context.quiet_hours:
+            # Already in quiet hours — schedule immediately
+            quiet_start_utc = now
+        else:
+            user_tz = zoneinfo.ZoneInfo(user.timezone or "UTC")
+            quiet_h, quiet_m = map(int, (user.quiet_start or "22:00").split(":"))
+            now_local = now.astimezone(user_tz)
+            quiet_local = now_local.replace(
+                hour=quiet_h, minute=quiet_m, second=0, microsecond=0
+            )
+            if now_local >= quiet_local:
+                quiet_local = quiet_local + timedelta(days=1)
+            quiet_start_utc = quiet_local.astimezone(UTC)
+
+        date_key = quiet_start_utc.date().isoformat()
+        count = 0
+        for kind in ("dream", "consolidate"):
+            key = f"{kind}:{user.id}:{date_key}"
+            existing = await self.session.execute(
+                select(HeartbeatJob).where(HeartbeatJob.idempotency_key == key).limit(1)
+            )
+            if existing.scalar_one_or_none() is not None:
+                continue
+            self.session.add(
+                HeartbeatJob(
+                    user_id=user.id,
+                    kind=kind,
+                    due_at=quiet_start_utc,
+                    channel="internal",
+                    payload={"reason": f"scheduled_{kind}"},
+                    idempotency_key=key,
+                )
+            )
+            count += 1
+        if count:
+            await self.session.flush()
+        return count
 
     async def due_jobs(self, now: datetime) -> list[HeartbeatJob]:
         result = await self.session.execute(
@@ -159,11 +211,20 @@ class HeartbeatService:
             return False, "user_not_found"
         if not user.proactive_enabled:
             return False, "proactive_disabled"
+
+        time_context = build_time_context(user, now=now)
+
+        # Internal jobs (dream/consolidate) only run DURING quiet hours —
+        # invert the gate and skip cooldown/quota checks entirely.
+        if job.kind in {"dream", "consolidate"}:
+            if not time_context.quiet_hours:
+                return False, "awaiting_quiet_hours"
+            return True, "eligible"
+
         if user.proactive_paused_until is not None and user.proactive_paused_until > now:
             return False, "proactive_paused"
         if user.monthly_llm_tokens_used >= user.monthly_llm_token_budget:
             return False, "quota_exceeded"
-        time_context = build_time_context(user, now=now)
         if time_context.quiet_hours:
             return False, "quiet_hours"
         cooldown_start = now - timedelta(minutes=user.proactive_cooldown_minutes)

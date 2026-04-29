@@ -120,7 +120,9 @@ async def process_due_heartbeats() -> dict[str, int]:
             # Hard gate first (cheap Python checks)
             eligible, reason = await heartbeat.should_send(job, now)
             if not eligible:
-                if reason == "quiet_hours":
+                # Defer quiet-hours jobs (both regular blocked by quiet hours,
+                # and internal jobs awaiting quiet hours) +30 min so they retry.
+                if reason in {"quiet_hours", "awaiting_quiet_hours"}:
                     job.due_at = now + timedelta(minutes=30)
                     await heartbeat.record_event(
                         job, "deferred", reason, trace_id=trace_id, skip_reason=reason
@@ -132,6 +134,37 @@ async def process_due_heartbeats() -> dict[str, int]:
                         job, "suppressed", reason, trace_id=trace_id, skip_reason=reason
                     )
                     suppressed += 1
+                continue
+
+            # Internal job branch: dream/consolidate run directly, no Telegram
+            if job.kind in {"dream", "consolidate"}:
+                try:
+                    if job.kind == "dream":
+                        from healthclaw.memory.dream import DreamService
+
+                        await DreamService(session, settings).run_for_user(job.user_id)
+                    else:
+                        from healthclaw.memory.consolidator import ConsolidatorService
+                        from healthclaw.memory.service import MemoryService
+
+                        await ConsolidatorService(
+                            session, settings, MemoryService(session)
+                        ).run_for_user(job.user_id)
+                    job.status = "sent"
+                    job.sent_at = datetime.now(UTC)
+                    job.attempts += 1
+                    await heartbeat.record_event(
+                        job, "internal", job.kind, trace_id=trace_id
+                    )
+                    sent += 1
+                except Exception as exc:
+                    job.status = "failed"
+                    job.last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                    job.attempts += 1
+                    await heartbeat.record_event(
+                        job, "failed", f"{job.kind}_error", trace_id=trace_id
+                    )
+                    failed += 1
                 continue
 
             # Load user for soft gate
