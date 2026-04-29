@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
-from healthclaw.agent.soul import streaks_block
 from healthclaw.db.models import Ritual, User, new_id
 from healthclaw.db.session import SessionLocal
 from healthclaw.heartbeat.streaks import RitualStreakService
@@ -228,24 +227,3 @@ async def test_streaks_payload_filters_enabled_and_sorts_desc() -> None:
 
     assert [p["kind"] for p in payload] == ["a", "b"]
     assert payload[0]["streak_count"] == 5
-
-
-def test_soul_block_gate_rules() -> None:
-    streaks = [
-        {
-            "kind": "morning_check_in",
-            "title": "Morning check-in",
-            "streak_count": 7,
-            "streak_last_date": "2026-04-23",
-        }
-    ]
-    assert streaks_block(streaks, "low", "benign") == ""
-    assert streaks_block(streaks, "medium", "crisis") == ""
-    assert streaks_block(
-        [{"kind": "morning_check_in", "streak_count": 2, "streak_last_date": "2026-04-23"}],
-        "high",
-        "benign",
-    ) == ""
-    block = streaks_block(streaks, "high", "benign")
-    assert "morning_check_in" in block
-    assert "7-day streak" in block

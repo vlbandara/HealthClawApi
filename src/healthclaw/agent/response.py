@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from healthclaw.agent.safety import SafetyDecision
-from healthclaw.agent.soul import streaks_block, system_prompt, trust_band_label
+from healthclaw.agent.soul import system_prompt
 from healthclaw.agent.time_context import TimeContext
 from healthclaw.core.config import get_settings
 from healthclaw.integrations.openrouter import OpenRouterClient
@@ -158,10 +158,9 @@ async def generate_companion_response(
     relationship_signals: list[str] | None = None,
 ) -> tuple[GenerationResult, dict[str, object]]:
     user_context = user_context or {}
-    trust_band = trust_band_label(_trust_level(user_context))
     safety_category = safety_category or safety.category
     streaks = streaks or []
-    streaks_surfaced = bool(streaks_block(streaks, trust_band, safety_category))
+    streaks_surfaced = bool(streaks)
 
     if safety.category != "wellness":
         return (
@@ -175,7 +174,6 @@ async def generate_companion_response(
             {
                 "provider": "deterministic",
                 "reason": safety.category,
-                "trust_band": trust_band,
                 "streaks_surfaced": False,
             },
         )
@@ -194,7 +192,6 @@ async def generate_companion_response(
             {
                 "provider": "deterministic",
                 "reason": "openrouter_not_configured",
-                "trust_band": trust_band,
                 "streaks_surfaced": False,
             },
         )
@@ -245,10 +242,18 @@ async def generate_companion_response(
                 soul_preferences,
                 user_id=str(runtime_context["user_id"]),
                 timezone=str(runtime_context["timezone"]),
+                local_time=time_context.to_dict(),
                 lifecycle_stage=_lifecycle_stage(recent_messages),
+                recent_message_count=len(recent_messages),
                 memory_documents=memory_documents,
                 trust_level=_trust_level(user_context),
+                sentiment_ema=_float_or_none(user_context.get("sentiment_ema")),
+                voice_text_ratio=_float_or_none(user_context.get("voice_text_ratio")),
+                reply_latency_seconds_ema=_float_or_none(
+                    user_context.get("reply_latency_seconds_ema")
+                ),
                 streaks=streaks,
+                open_loops=open_loops,
                 safety_category=safety_category,
             )
             + "\n\n# Action Output Contract\n\n"
@@ -298,7 +303,6 @@ async def generate_companion_response(
             {
                 "provider": "deterministic",
                 "reason": "openrouter_error",
-                "trust_band": trust_band,
                 "streaks_surfaced": False,
             },
         )
@@ -312,7 +316,6 @@ async def generate_companion_response(
             "bridges_used": len(bridges) if bridges else 0,
             "recent_messages_used": len(recent_lines),
             "conversation_digest_used": bool(conversation_digest),
-            "trust_band": trust_band,
             "streaks_surfaced": streaks_surfaced,
             "actions.parse_error": parse_error,
         },

@@ -45,10 +45,16 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
         },
     )
 
-    prompt = captured_messages[-1]["content"]
+    system_content = str(captured_messages[0]["content"])
+    prompt = str(captured_messages[-1]["content"])
     assert generation.message == "Relationship-aware reply"
     assert metadata["provider"] == "openrouter"
     assert isinstance(metadata.get("streaks_surfaced"), bool)
+    assert "# Observable Context" in system_content
+    assert "trust_level: 0.30" in system_content
+    assert "sentiment_ema: -0.6" in system_content
+    assert "voice_text_ratio: 0.8" in system_content
+    assert "reply_latency_seconds_ema: 50000.0" in system_content
     assert "<relationship_signals>" in prompt
     assert "lower-pressure phrasing" in prompt
     assert "spoken-style phrasing" in prompt
@@ -57,7 +63,9 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
     get_settings.cache_clear()
 
 
-async def test_generate_companion_response_surfaces_streak_block_when_gated(monkeypatch) -> None:
+async def test_generate_companion_response_surfaces_streak_facts_in_observable_context(
+    monkeypatch,
+) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_messages: list[dict[str, object]] = []
@@ -96,9 +104,10 @@ async def test_generate_companion_response_surfaces_streak_block_when_gated(monk
     system_prompt = captured_messages[0]["content"]
     assert generation.message == "Streak-aware reply"
     assert metadata["streaks_surfaced"] is True
-    assert "# Active rituals" in system_prompt
+    assert "# Observable Context" in system_prompt
     assert "morning_check_in" in system_prompt
-    assert "7-day streak" in system_prompt
+    assert "count=7" in system_prompt
+    assert "# Active rituals" not in system_prompt
     get_settings.cache_clear()
 
 
