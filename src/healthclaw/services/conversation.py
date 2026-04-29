@@ -10,7 +10,7 @@ from healthclaw.agent.graph import agent_graph
 from healthclaw.agent.thread_digest import compact_thread_summary
 from healthclaw.agent.time_context import build_time_context
 from healthclaw.core.config import get_settings
-from healthclaw.core.tracing import new_trace_id, redacted_payload
+from healthclaw.core.tracing import new_trace_id, redacted_payload, start_span
 from healthclaw.db.models import (
     Account,
     AgentCheckpoint,
@@ -524,43 +524,55 @@ class ConversationService:
                     executed.append({"type": action_type, "id": loop.id})
                 elif action_type == "close_open_loop":
                     action = CloseOpenLoopAction.model_validate(raw_action)
-                    open_loop = await self.session.get(OpenLoop, action.id)
-                    if open_loop is None or open_loop.status != "open":
-                        dropped.append({"type": action_type, "reason": "open_loop_missing"})
-                        continue
-                    open_loop.status = "closed"
-                    open_loop.closed_at = utc_now()
-                    open_loop.metadata_ = {
-                        **(open_loop.metadata_ or {}),
-                        "closed_summary": action.summary,
-                        "closed_outcome": action.outcome,
-                    }
-                    loop_thread = await self.session.get(ConversationThread, open_loop.thread_id)
-                    if loop_thread is not None and loop_thread.open_loop_count > 0:
-                        loop_thread.open_loop_count -= 1
-                    open_jobs = await self.session.execute(
-                        select(HeartbeatJob).where(
-                            HeartbeatJob.open_loop_id == open_loop.id,
-                            HeartbeatJob.status == "scheduled",
-                        )
-                    )
-                    for job in open_jobs.scalars():
-                        job.status = "suppressed"
-                        job.last_error = "open_loop_closed"
-                    state.setdefault("memory_mutations", []).append(
-                        {
-                            "kind": "relationship",
-                            "key": f"closed_loop:{open_loop.id}",
-                            "value": {
-                                "summary": action.summary,
-                                "title": open_loop.title,
-                                "outcome": action.outcome,
-                            },
-                            "confidence": 0.7,
-                            "reason": "User confirmed completion of open loop.",
-                            "layer": "relationship",
+                    async with start_span(
+                        "loop.close.execute",
+                        attributes={
+                            "open_loop_id": action.id,
+                            "decided_by": "llm",
+                            "outcome": action.outcome,
+                        },
+                    ) as close_span:
+                        open_loop = await self.session.get(OpenLoop, action.id)
+                        if open_loop is None or open_loop.status != "open":
+                            dropped.append({"type": action_type, "reason": "open_loop_missing"})
+                            close_span.set_attribute("closed", False)
+                            continue
+                        open_loop.status = "closed"
+                        open_loop.closed_at = utc_now()
+                        open_loop.metadata_ = {
+                            **(open_loop.metadata_ or {}),
+                            "closed_summary": action.summary,
+                            "closed_outcome": action.outcome,
                         }
-                    )
+                        loop_thread = await self.session.get(
+                            ConversationThread, open_loop.thread_id
+                        )
+                        if loop_thread is not None and loop_thread.open_loop_count > 0:
+                            loop_thread.open_loop_count -= 1
+                        open_jobs = await self.session.execute(
+                            select(HeartbeatJob).where(
+                                HeartbeatJob.open_loop_id == open_loop.id,
+                                HeartbeatJob.status == "scheduled",
+                            )
+                        )
+                        for job in open_jobs.scalars():
+                            job.status = "suppressed"
+                            job.last_error = "open_loop_closed"
+                        state.setdefault("memory_mutations", []).append(
+                            {
+                                "kind": "relationship",
+                                "key": f"closed_loop:{open_loop.id}",
+                                "value": {
+                                    "summary": action.summary,
+                                    "title": open_loop.title,
+                                    "outcome": action.outcome,
+                                },
+                                "confidence": 0.7,
+                                "reason": "User confirmed completion of open loop.",
+                                "layer": "relationship",
+                            }
+                        )
+                        close_span.set_attribute("closed", True)
                     executed.append(
                         {
                             "type": action_type,
