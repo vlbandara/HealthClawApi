@@ -227,11 +227,17 @@ async def generate_companion_response(
             ),
         },
     ]
+    metadata = {
+        "model_role": "chat",
+        "node": "companion_response",
+        "user_id": str(runtime_context["user_id"]),
+    }
     try:
         result = await client.chat_completion(
             messages,
             max_tokens=settings.openrouter_chat_max_tokens,
             temperature=settings.openrouter_chat_temperature,
+            metadata=metadata,
         )
     except RuntimeError:
         return (

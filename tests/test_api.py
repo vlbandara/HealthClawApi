@@ -109,7 +109,24 @@ async def test_second_conversation_message_serializes_checkpoint_state(
     assert isinstance(checkpoint.state["trace_metadata"]["last_interaction_at"], str)
 
 
-async def test_active_mode_applies_context_harness_metadata(client: AsyncClient) -> None:
+async def test_active_mode_applies_context_harness_metadata(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content="Sure, let me help you with tonight.",
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 10},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+
     first = await client.post(
         "/v1/conversations/u-active/messages",
         json={"content": "My goal is sleep by 10pm."},
@@ -136,6 +153,7 @@ async def test_active_mode_applies_context_harness_metadata(client: AsyncClient)
     assert "goal:current_goal" in harness["applied_memory_keys"]
     assert harness["applied_counts"]["recent_messages"] >= 1
     assert checkpoint.state["trace_metadata"]["generation"]["conversation_digest_used"] is True
+    get_settings.cache_clear()
 
 
 async def test_shadow_mode_records_context_harness_metadata(monkeypatch) -> None:
@@ -333,7 +351,7 @@ async def test_conversation_uses_openrouter_when_configured(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured: list[dict[str, object]] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured.append({"max_tokens": max_tokens, "temperature": temperature})
         return OpenRouterResult(
             content="OpenRouter wellness reply",
@@ -463,7 +481,7 @@ async def test_conversation_sends_recent_thread_context_to_openrouter(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_user_contexts: list[str] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured_user_contexts.append(messages[-1]["content"])
         return OpenRouterResult(
             content="Context-aware reply",

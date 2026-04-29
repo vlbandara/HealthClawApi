@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     context_harness_doc_section_chars: int = 420
     context_harness_document_chars: int = 1400
     use_arq_worker: bool = False
+    thread_summary_compact_every: int = 6
+    thread_summary_max_chars: int = 1200
 
     @property
     def is_production(self) -> bool:

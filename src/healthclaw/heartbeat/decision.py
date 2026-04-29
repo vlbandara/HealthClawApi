@@ -117,6 +117,11 @@ async def decide(
             max_tokens=200,
             temperature=0.0,
             model=settings.openrouter_decision_model,
+            metadata={
+                "model_role": "decision",
+                "user_id": user.id,
+                "job_kind": job.kind,
+            },
         )
         raw = result.content.strip()
         # Strip markdown fences

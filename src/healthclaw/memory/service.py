@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import case, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from healthclaw.core.tracing import start_span
 from healthclaw.db.models import Memory, MemoryRevision, PolicyProposal
 from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.schemas.memory import MemoryMutation
@@ -74,7 +75,17 @@ class MemoryService:
             from healthclaw.memory.retrieval import HybridRetriever
 
             retriever = HybridRetriever(self.session, self._embedding_client)
-            return await retriever.retrieve(user_id, query, limit=limit, kinds=kinds)
+            async with start_span(
+                "memory.retrieve",
+                attributes={
+                    "user_id": user_id,
+                    "query_len": len(query),
+                    "limit": limit,
+                },
+            ) as span:
+                result = await retriever.retrieve(user_id, query, limit=limit, kinds=kinds)
+                span.set_attribute("result_count", len(result))
+                return result
 
         # Lexical-only fallback (used when no embedding client is wired in)
         memories = [
@@ -217,7 +228,30 @@ class MemoryService:
         source_message_ids: list[str],
         *,
         trace_id: str | None = None,
-    ) -> Memory:
+    ) -> tuple[Memory, str]:
+        outcome = "skipped"
+        async with start_span(
+            "memory.upsert",
+            attributes={
+                "kind": mutation.kind,
+                "key": mutation.key,
+                "outcome": outcome,
+            },
+        ) as span:
+            result, is_new = await self._upsert_memory_impl(
+                user_id, mutation, source_message_ids, trace_id
+            )
+            outcome = "created" if is_new else "updated"
+            span.set_attribute("outcome", outcome)
+            return result, outcome
+
+    async def _upsert_memory_impl(
+        self,
+        user_id: str,
+        mutation: MemoryMutation,
+        source_message_ids: list[str],
+        trace_id: str | None = None,
+    ) -> tuple[Memory, bool]:
         if mutation.kind == "policy" and mutation.key in HIGH_IMPACT_POLICY_KEYS:
             self.session.add(
                 PolicyProposal(
@@ -230,7 +264,10 @@ class MemoryService:
                 )
             )
             await self.session.flush()
-            return await self._policy_proposal_shadow_memory(user_id, mutation)
+            shadow_memory, shadow_is_new = await self._policy_proposal_shadow_memory(
+                user_id, mutation
+            )
+            return shadow_memory, shadow_is_new
 
         result = await self.session.execute(
             select(Memory).where(
@@ -240,6 +277,7 @@ class MemoryService:
             )
         )
         memory = result.scalar_one_or_none()
+        is_new = memory is None
         previous = None if memory is None else memory.value
         now = datetime.now(UTC)
         semantic_text = self._semantic_text(mutation.value)
@@ -303,7 +341,7 @@ class MemoryService:
         # Inline embedding — runs after flush so memory.id is available
         await self._try_embed_memory(memory)
 
-        return memory
+        return memory, is_new
 
     async def _try_embed_memory(self, memory: Memory) -> None:
         if self._embedding_client is None or not self._embedding_client.enabled:
@@ -330,7 +368,7 @@ class MemoryService:
         self,
         user_id: str,
         mutation: MemoryMutation,
-    ) -> Memory:
+    ) -> tuple[Memory, bool]:
         result = await self.session.execute(
             select(Memory).where(
                 Memory.user_id == user_id,
@@ -339,6 +377,7 @@ class MemoryService:
             )
         )
         memory = result.scalar_one_or_none()
+        is_new = memory is None
         value: dict[str, Any] = {
             "key": mutation.key,
             "status": "pending_approval",
@@ -360,7 +399,7 @@ class MemoryService:
             )
             self.session.add(memory)
             await self.session.flush()
-        return memory
+        return memory, is_new
 
     @staticmethod
     def _semantic_text(value: dict[str, Any]) -> str:

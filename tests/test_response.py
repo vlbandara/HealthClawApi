@@ -14,7 +14,7 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_messages: list[dict[str, object]] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured_messages.extend(messages)
         return OpenRouterResult(
             content="Relationship-aware reply",
@@ -62,7 +62,7 @@ async def test_generate_companion_response_surfaces_streak_block_when_gated(monk
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_messages: list[dict[str, object]] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured_messages.extend(messages)
         return OpenRouterResult(
             content="Streak-aware reply",
@@ -107,7 +107,7 @@ async def test_generate_companion_response_includes_conversation_digest(monkeypa
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_messages: list[dict[str, object]] = []
 
-    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4):
+    async def fake_chat_completion(self, messages, max_tokens=180, temperature=0.4, **kwargs):
         captured_messages.extend(messages)
         return OpenRouterResult(
             content="Digest-aware reply",

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.agent.soul import PROTECTED_SOUL_KEYS, sanitized_soul_preferences
 from healthclaw.core.config import Settings
+from healthclaw.core.tracing import start_span
 from healthclaw.db.models import (
     DreamChange,
     DreamRun,
@@ -129,15 +130,26 @@ class DreamService:
                 for message in messages[-MAX_DREAM_MESSAGES:]
             ],
         }
-        result = await client.chat_completion(
-            messages=[
-                {"role": "system", "content": DREAM_SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(prompt)},
-            ],
-            max_tokens=1000,
-            temperature=0.1,
-            model=self.settings.openrouter_dream_model,
-        )
+        async with start_span(
+                "openrouter.chat",
+                attributes={
+                    "model_role": "dream",
+                    "user_id": user.id,
+                },
+            ):
+                result = await client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": DREAM_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps(prompt)},
+                    ],
+                    max_tokens=1000,
+                    temperature=0.1,
+                    model=self.settings.openrouter_dream_model,
+                    metadata={
+                        "model_role": "dream",
+                        "user_id": user.id,
+                    },
+                )
         raw = result.content.strip()
         if raw.startswith("```"):
             parts = raw.split("```")
