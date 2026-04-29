@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 
 from pydantic import TypeAdapter, ValidationError
@@ -16,11 +15,6 @@ from healthclaw.memory.extractors import extract_memory_mutations_enriched
 from healthclaw.schemas.actions import Action
 
 ACTION_ADAPTER = TypeAdapter(Action)
-REMINDER_CLAIM_RE = re.compile(
-    r"\b(reminder|alarm|set for|i'?ll remind|i set|scheduled"
-    r"|i (?:created|made|added).*?(?:reminder|alarm))\b",
-    flags=re.I,
-)
 
 
 @traced_node("input_normalization")
@@ -177,24 +171,12 @@ async def execute_actions(state: AgentState) -> AgentState:
             )
 
     action_types = [str(a.get("type") or "") for a in actions_taken]
-    consistency = "ok"
-    safety_category = str(state.get("safety", {}).get("category") or "")
-    if (
-        REMINDER_CLAIM_RE.search(state.get("response", ""))
-        and "create_reminder" not in action_types
-        and safety_category not in {"crisis", "medical", "medical_boundary"}
-    ):
-        state["response"] = (
-            f"{state.get('response', '').strip()} Want me to actually set a reminder for that?"
-        )
-        consistency = "patched"
 
     state["actions_taken"] = actions_taken
     trace_metadata = {**state.get("trace_metadata", {})}
     trace_metadata["action_execution"] = {
         "action_count": len(actions_taken),
         "action_types": ",".join(action_types),
-        "action.consistency": consistency,
         "dropped": dropped,
     }
     state["trace_metadata"] = trace_metadata

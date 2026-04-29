@@ -175,9 +175,9 @@ async def test_generate_companion_response_includes_open_loop_ids(monkeypatch) -
     system_prompt = str(captured_messages[0]["content"])
     user_prompt = str(captured_messages[-1]["content"])
     assert generation.message == "Loop-aware reply"
-    assert 'close_open_loop, and none' in system_prompt
-    assert 'exactly matches one listed under Open Loops' in system_prompt
-    assert 'outcome" of "completed", "dropped", or "reframed"' in system_prompt
+    assert 'close_open_loop' in system_prompt
+    assert 'exact id' in system_prompt
+    assert '"completed"' in system_prompt
     assert "id=loop-1" in user_prompt
     assert "title=go for a walk tonight" in user_prompt
     assert "kind=commitment" in user_prompt

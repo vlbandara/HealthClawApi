@@ -75,16 +75,17 @@ async def test_action_executor_creates_reminder_and_commitment_memory(
     get_settings.cache_clear()
 
 
-async def test_action_executor_patches_unbacked_reminder_claim(
+async def test_action_executor_no_action_no_reminder_row(
     client: AsyncClient, monkeypatch
 ) -> None:
+    """When the LLM emits no create_reminder action, no Reminder row is created."""
     get_settings.cache_clear()
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     async def fake_chat_completion(self, messages, **kwargs):
         return OpenRouterResult(
             content=(
-                '{"message":"Set for gym reminder this evening.",'
+                '{"message":"Sure, when would you like the gym reminder?",'
                 '"actions":[],"memory_proposals":[]}'
             ),
             model="moonshotai/kimi-k2.6",
@@ -100,8 +101,6 @@ async def test_action_executor_patches_unbacked_reminder_claim(
         json={"content": "set a gym reminder"},
     )
     assert response.status_code == 200
-    body = response.json()
-    assert "Want me to actually set a reminder for that?" in body["response"]
 
     async with SessionLocal() as session:
         reminders = list(
@@ -111,15 +110,7 @@ async def test_action_executor_patches_unbacked_reminder_claim(
                 )
             ).scalars()
         )
-        checkpoint = (
-            await session.execute(
-                select(AgentCheckpoint).where(AgentCheckpoint.trace_id == body["trace_id"])
-            )
-        ).scalar_one()
     assert reminders == []
-    assert (
-        checkpoint.state["trace_metadata"]["action_execution"]["action.consistency"] == "patched"
-    )
     get_settings.cache_clear()
 
 
@@ -187,7 +178,6 @@ async def test_action_executor_drops_invalid_due_at(
     )
     assert response.status_code == 200
     body = response.json()
-    assert "Want me to actually set a reminder for that?" in body["response"]
 
     async with SessionLocal() as session:
         reminders = list(

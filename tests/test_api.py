@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -19,7 +21,41 @@ from healthclaw.db.session import SessionLocal
 from healthclaw.integrations.openrouter import OpenRouterResult
 
 
-async def test_conversation_message_creates_memory(client: AsyncClient) -> None:
+def _goal_response(goal_text: str = "sleep by 10pm") -> str:
+    """Return a valid action-contract JSON response with a goal memory_proposal."""
+    return json.dumps({
+        "message": "Got it, I will keep that in mind.",
+        "actions": [],
+        "memory_proposals": [
+            {
+                "kind": "goal",
+                "key": "current_goal",
+                "value": {"text": goal_text},
+                "confidence": 0.8,
+                "reason": "User stated goal",
+                "layer": "goal",
+            }
+        ],
+    })
+
+
+async def test_conversation_message_creates_memory(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=_goal_response("sleep by 10pm"),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 20},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
     response = await client.post(
         "/v1/conversations/u1/messages",
         json={"content": "My goal is sleep by 10pm.", "timezone": "Asia/Colombo"},
@@ -32,9 +68,36 @@ async def test_conversation_message_creates_memory(client: AsyncClient) -> None:
     memory_response = await client.get("/v1/users/u1/memory")
     assert memory_response.status_code == 200
     assert memory_response.json()["memories"][0]["key"] == "current_goal"
+    get_settings.cache_clear()
 
 
-async def test_commitment_creates_open_loop_and_timeline(client: AsyncClient) -> None:
+async def test_commitment_creates_open_loop_and_timeline(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=json.dumps({
+                "message": "Got it, I have noted that down.",
+                "actions": [
+                    {
+                        "type": "create_open_loop",
+                        "title": "prepare my room for sleep",
+                        "kind": "commitment",
+                    }
+                ],
+                "memory_proposals": [],
+            }),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 20},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
     response = await client.post(
         "/v1/conversations/u-loop/messages",
         json={"content": "Tonight I will prepare my room for sleep."},
@@ -54,6 +117,7 @@ async def test_commitment_creates_open_loop_and_timeline(client: AsyncClient) ->
     assert timeline.json()["open_loops"][0]["title"] == "prepare my room for sleep"
     assert open_loop.title == "prepare my room for sleep"
     assert heartbeat.kind == "open_loop_followup"
+    get_settings.cache_clear()
 
 
 async def test_conversation_creates_trace_and_checkpoint(client: AsyncClient) -> None:
@@ -118,9 +182,9 @@ async def test_active_mode_applies_context_harness_metadata(
 
     async def fake_chat_completion(self, messages, **kwargs):
         return OpenRouterResult(
-            content="Sure, let me help you with tonight.",
+            content=_goal_response("sleep by 10pm"),
             model="moonshotai/kimi-k2.6",
-            usage={"total_tokens": 10},
+            usage={"total_tokens": 20},
         )
 
     monkeypatch.setattr(
@@ -162,6 +226,19 @@ async def test_shadow_mode_records_context_harness_metadata(monkeypatch) -> None
 
     get_settings.cache_clear()
     monkeypatch.setenv("CONTEXT_HARNESS_MODE", "shadow")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=_goal_response("sleep by 10pm"),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 20},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
 
     app = create_app()
     async with AsyncClient(
@@ -223,7 +300,23 @@ async def test_telegram_start_uses_natural_first_chat_copy(client: AsyncClient) 
     assert "sleep, training, recovery" not in body["response"]
 
 
-async def test_web_slash_memory_uses_command_handler(client: AsyncClient) -> None:
+async def test_web_slash_memory_uses_command_handler(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=_goal_response("sleep by 10pm"),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 20},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
     first = await client.post(
         "/v1/conversations/u-web-command/messages",
         json={"content": "My goal is sleep by 10pm.", "channel": "web"},
@@ -239,6 +332,7 @@ async def test_web_slash_memory_uses_command_handler(client: AsyncClient) -> Non
     assert body["safety_category"] == "command"
     assert "goal:current_goal - sleep by 10pm" in body["response"]
     assert "episode:latest_check_in" not in body["response"]
+    get_settings.cache_clear()
 
 
 async def test_preferences_patch(client: AsyncClient) -> None:
@@ -265,12 +359,29 @@ async def test_soul_preferences_block_protected_policy(client: AsyncClient) -> N
     assert "medical_boundary" not in body["response_preferences"]
 
 
-async def test_memory_patch_delete_and_pause_resume(client: AsyncClient) -> None:
+async def test_memory_patch_delete_and_pause_resume(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=_goal_response("walk after lunch"),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 20},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
     await client.post(
         "/v1/conversations/u-memory-api/messages",
         json={"content": "My goal is walk after lunch."},
     )
     memory = (await client.get("/v1/users/u-memory-api/memory")).json()["memories"][0]
+    get_settings.cache_clear()
 
     patched = await client.patch(
         f"/v1/users/u-memory-api/memory/{memory['id']}",
@@ -513,7 +624,44 @@ async def test_conversation_sends_recent_thread_context_to_openrouter(
     get_settings.cache_clear()
 
 
-async def test_memory_endpoint_returns_markdown_documents(client: AsyncClient) -> None:
+async def test_memory_endpoint_returns_markdown_documents(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=json.dumps({
+                "message": "Nice to meet you, Vinodh!",
+                "actions": [],
+                "memory_proposals": [
+                    {
+                        "kind": "profile",
+                        "key": "preferred_name",
+                        "value": {"text": "Vinodh"},
+                        "confidence": 0.9,
+                        "reason": "User stated name",
+                        "layer": "profile",
+                    },
+                    {
+                        "kind": "goal",
+                        "key": "current_goal",
+                        "value": {"text": "sleep by 10pm"},
+                        "confidence": 0.8,
+                        "reason": "User stated goal",
+                        "layer": "goal",
+                    },
+                ],
+            }),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 30},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
     response = await client.post(
         "/v1/conversations/u-docs/messages",
         json={"content": "my name is Vinodh. My goal is sleep by 10pm."},
@@ -528,6 +676,7 @@ async def test_memory_endpoint_returns_markdown_documents(client: AsyncClient) -
     }
     assert "Preferred name: Vinodh" in documents["USER"]
     assert "sleep by 10pm" in documents["MEMORY"]
+    get_settings.cache_clear()
 
 
 async def test_reminders_endpoint_still_creates_row(client: AsyncClient) -> None:
