@@ -22,15 +22,20 @@ class GenerationResult:
 ACTION_OUTPUT_CONTRACT = (
     "Output a single JSON object with exactly these keys: "
     '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation]}. '
-    "Allowed action types and their required fields:\n"
+    'Each action must use {"type": str, "payload": {...}, "rationale": str | null}. '
+    "Known capabilities right now:\n"
     "  create_reminder: "
-    '{"type":"create_reminder","text":"<label>","due_at_iso":"<ISO 8601 with tz>"}\n'
+    '{"type":"create_reminder","payload":{"text":"<label>",'
+    '"due_at_iso":"<ISO 8601 with tz>"},"rationale":"<why>"}\n'
     "  create_open_loop: "
-    '{"type":"create_open_loop","title":"<title>","kind":"commitment"}\n'
+    '{"type":"create_open_loop","payload":{"title":"<title>",'
+    '"kind":"commitment"},"rationale":"<why>"}\n'
     "  close_open_loop: "
-    '{"type":"close_open_loop","id":"<exact id>","summary":"<one line>",'
-    '"outcome":"completed"|"dropped"|"reframed"}\n'
-    '  none: {"type":"none"}\n'
+    '{"type":"close_open_loop","payload":{"id":"<exact id>","summary":"<one line>",'
+    '"outcome":"completed"|"dropped"|"reframed"},"rationale":"<why>"}\n'
+    '  none: {"type":"none","payload":{},"rationale":null}\n'
+    "If you want a capability that does not exist yet, "
+    "still propose it with a clear type and payload. "
     "Only say you set, scheduled, or created something "
     "when the matching action appears in actions. "
     "If timing/details are uncertain, ask the user instead of guessing."
@@ -271,8 +276,10 @@ def _observable_signals_block(
         time_context,
     )
     lines = [
-        f"- sentiment_ema={_format_signal_value(_float_or_none(user_context.get('sentiment_ema')))}",
-        f"- voice_text_ratio={_format_signal_value(_float_or_none(user_context.get('voice_text_ratio')))}",
+        "- sentiment_ema="
+        + _format_signal_value(_float_or_none(user_context.get("sentiment_ema"))),
+        "- voice_text_ratio="
+        + _format_signal_value(_float_or_none(user_context.get("voice_text_ratio"))),
         (
             "- reply_latency_hours="
             f"{_format_signal_value(_seconds_to_hours(user_context.get('reply_latency_seconds_ema')))}"

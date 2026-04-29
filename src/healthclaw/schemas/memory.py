@@ -1,22 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-MemoryKind = Literal[
-    "profile",
-    "goal",
-    "routine",
-    "friction",
-    "commitment",
-    "open_loop",
-    "relationship",
-    "episode",
-    "preference",
-    "policy",
-]
+MemoryKind = str
 
 
 class MemoryRead(BaseModel):

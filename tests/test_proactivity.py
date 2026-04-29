@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from healthclaw.agent.wellbeing import WellbeingDecision
 from healthclaw.db.models import HeartbeatEvent, HeartbeatJob, ProactiveEvent, Reminder, User
 from healthclaw.db.session import SessionLocal
 from healthclaw.workers.app import process_due_heartbeats, process_due_reminders
@@ -15,9 +16,23 @@ async def test_process_due_reminders_sends_telegram(monkeypatch) -> None:
     async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
         sent_messages.append((external_id, text))
 
+    async def fake_reflect_on_wellbeing(*, settings, user_id, decision_input, metadata):
+        return WellbeingDecision(
+            reach_out=True,
+            when="now",
+            message_seed="Ease into your wind-down routine when you have a minute.",
+            rationale="a calm nudge fits the current gap",
+            model="test-model",
+            decision_input=decision_input,
+        )
+
     monkeypatch.setattr(
         "healthclaw.channels.telegram.TelegramAdapter.send_message",
         fake_send_message,
+    )
+    monkeypatch.setattr(
+        "healthclaw.proactivity.service.reflect_on_wellbeing",
+        fake_reflect_on_wellbeing,
     )
     async with SessionLocal() as session:
         session.add(
@@ -59,18 +74,33 @@ async def test_process_due_reminders_sends_telegram(monkeypatch) -> None:
     assert result["suppressed"] == 0
     assert result["deferred"] == 0
     assert result["failed"] == 0
-    assert sent_messages == [("123", "Time for your wind-down routine.")]
+    assert sent_messages == [("123", "Ease into your wind-down routine when you have a minute.")]
     assert reminder.status == "sent"
     assert event.decision == "sent"
+    assert event.reason == "a calm nudge fits the current gap"
 
 
-async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None:
+async def test_process_due_reminders_defers_on_reflection_delay(monkeypatch) -> None:
     async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
-        raise AssertionError("quiet-hour reminders should not be delivered")
+        raise AssertionError("deferred reminders should not be delivered")
+
+    async def fake_reflect_on_wellbeing(*, settings, user_id, decision_input, metadata):
+        return WellbeingDecision(
+            reach_out=True,
+            when="in_30m",
+            message_seed="",
+            rationale="wait until the quiet window passes",
+            model="test-model",
+            decision_input=decision_input,
+        )
 
     monkeypatch.setattr(
         "healthclaw.channels.telegram.TelegramAdapter.send_message",
         fake_send_message,
+    )
+    monkeypatch.setattr(
+        "healthclaw.proactivity.service.reflect_on_wellbeing",
+        fake_reflect_on_wellbeing,
     )
     async with SessionLocal() as session:
         session.add(
@@ -89,7 +119,7 @@ async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None
                 due_at=datetime.now(UTC) - timedelta(minutes=1),
                 channel="telegram",
                 status="scheduled",
-                idempotency_key="reminder-suppress",
+                idempotency_key="reminder-defer",
             )
         )
         await session.commit()
@@ -99,7 +129,7 @@ async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None
     async with SessionLocal() as session:
         reminder = (
             await session.execute(
-                select(Reminder).where(Reminder.idempotency_key == "reminder-suppress")
+                select(Reminder).where(Reminder.idempotency_key == "reminder-defer")
             )
         ).scalar_one()
         event = (
@@ -114,15 +144,30 @@ async def test_process_due_reminders_suppresses_quiet_hours(monkeypatch) -> None
     assert result["failed"] == 0
     assert reminder.status == "scheduled"
     assert event.decision == "deferred"
+    assert event.reason == "wait until the quiet window passes"
 
 
-async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
+async def test_process_due_reminders_applies_daily_cap_floor(monkeypatch) -> None:
     async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
-        raise AssertionError("cooldown reminders should not be delivered")
+        raise AssertionError("daily-cap reminders should not be delivered")
+
+    async def fake_reflect_on_wellbeing(*, settings, user_id, decision_input, metadata):
+        return WellbeingDecision(
+            reach_out=True,
+            when="now",
+            message_seed="Check in now.",
+            rationale="a nudge would make sense without the cap",
+            model="test-model",
+            decision_input=decision_input,
+        )
 
     monkeypatch.setattr(
         "healthclaw.channels.telegram.TelegramAdapter.send_message",
         fake_send_message,
+    )
+    monkeypatch.setattr(
+        "healthclaw.proactivity.service.reflect_on_wellbeing",
+        fake_reflect_on_wellbeing,
     )
     async with SessionLocal() as session:
         session.add(
@@ -132,27 +177,26 @@ async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
                 quiet_start="23:59",
                 quiet_end="00:00",
                 proactive_enabled=True,
-                proactive_cooldown_minutes=180,
+                proactive_max_per_day=1,
             )
         )
         reminder = Reminder(
             user_id="telegram:789",
-            text="Cooldown reminder",
+            text="Cap reminder",
             due_at=datetime.now(UTC) - timedelta(minutes=1),
             channel="telegram",
             status="scheduled",
-            idempotency_key="reminder-cooldown",
+            idempotency_key="reminder-cap",
         )
         session.add(reminder)
         await session.flush()
         session.add(
-            ProactiveEvent(
+            HeartbeatEvent(
                 user_id="telegram:789",
-                reminder_id=reminder.id,
                 decision="sent",
-                reason="eligible",
+                reason="already sent",
                 channel="telegram",
-                created_at=datetime.now(UTC) - timedelta(minutes=5),
+                created_at=datetime.now(UTC) - timedelta(minutes=10),
             )
         )
         await session.commit()
@@ -162,7 +206,12 @@ async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
     async with SessionLocal() as session:
         reminder = (
             await session.execute(
-                select(Reminder).where(Reminder.idempotency_key == "reminder-cooldown")
+                select(Reminder).where(Reminder.idempotency_key == "reminder-cap")
+            )
+        ).scalar_one()
+        event = (
+            await session.execute(
+                select(ProactiveEvent).where(ProactiveEvent.reminder_id == reminder.id)
             )
         ).scalar_one()
     assert result["due"] == 1
@@ -171,6 +220,8 @@ async def test_process_due_reminders_respects_cooldown(monkeypatch) -> None:
     assert result["deferred"] == 0
     assert result["failed"] == 0
     assert reminder.status == "suppressed"
+    assert event.decision == "suppressed"
+    assert event.reason == "daily delivery cap reached"
 
 
 async def test_process_due_heartbeats_sends_open_loop_followup(monkeypatch) -> None:
@@ -179,9 +230,23 @@ async def test_process_due_heartbeats_sends_open_loop_followup(monkeypatch) -> N
     async def fake_send_message(self, external_id: str, text: str, **_kwargs) -> None:
         sent_messages.append((external_id, text))
 
+    async def fake_reflect_on_wellbeing(*, settings, user_id, decision_input, metadata):
+        return WellbeingDecision(
+            reach_out=True,
+            when="now",
+            message_seed="Small follow-up: how did the stretch go?",
+            rationale="the open loop has waited long enough",
+            model="test-model",
+            decision_input=decision_input,
+        )
+
     monkeypatch.setattr(
         "healthclaw.channels.telegram.TelegramAdapter.send_message",
         fake_send_message,
+    )
+    monkeypatch.setattr(
+        "healthclaw.heartbeat.decision.reflect_on_wellbeing",
+        fake_reflect_on_wellbeing,
     )
     async with SessionLocal() as session:
         session.add(
@@ -225,7 +290,7 @@ async def test_process_due_heartbeats_sends_open_loop_followup(monkeypatch) -> N
     assert result["deferred"] == 0
     assert result["soft_skipped"] == 0
     assert result["failed"] == 0
-    assert sent_messages[0][0] == "heartbeat"
-    assert "stretch for 10 minutes" in sent_messages[0][1]
+    assert sent_messages == [("heartbeat", "Small follow-up: how did the stretch go?")]
     assert job.status == "sent"
     assert event.decision == "sent"
+    assert event.reason == "the open loop has waited long enough"

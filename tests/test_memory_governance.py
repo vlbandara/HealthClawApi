@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from healthclaw.db.models import PolicyProposal, User
+from healthclaw.db.models import Memory, MemoryKindAudit, User
 from healthclaw.db.session import SessionLocal
 from healthclaw.memory.service import MemoryService
 from healthclaw.schemas.memory import MemoryMutation
@@ -48,7 +48,7 @@ async def test_retrieve_relevant_memories_prioritizes_current_behavior() -> None
     assert memories[0].key == "current_goal"
 
 
-async def test_high_impact_policy_change_becomes_proposal() -> None:
+async def test_policy_memory_writes_directly_and_records_kind_audit() -> None:
     async with SessionLocal() as session:
         session.add(
             User(
@@ -72,14 +72,27 @@ async def test_high_impact_policy_change_becomes_proposal() -> None:
             ["m1"],
             trace_id="trace-policy",
         )
-        proposal = (
+        stored = (
             await session.execute(
-                select(PolicyProposal).where(PolicyProposal.trace_id == "trace-policy")
+                select(Memory).where(Memory.user_id == "u-policy", Memory.kind == "policy")
             )
         ).scalar_one()
+        audits = list(
+            (
+                await session.execute(
+                    select(MemoryKindAudit).where(
+                        MemoryKindAudit.user_id == "u-policy",
+                        MemoryKindAudit.kind == "policy",
+                    )
+                )
+            ).scalars()
+        )
 
-    assert memory.key == "pending_policy_proposal"
-    assert proposal.status == "pending"
+    assert memory.key == "medical_boundary"
+    assert stored.key == "medical_boundary"
+    assert len(audits) == 1
+    assert audits[0].trace_id == "trace-policy"
+    assert audits[0].first_seen_at <= audits[0].created_at
 
 
 async def test_upsert_reactivates_deleted_memory_and_keeps_source_history() -> None:

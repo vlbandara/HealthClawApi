@@ -1,23 +1,31 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.agent.time_context import build_time_context
+from healthclaw.agent.wellbeing import WellbeingDecision, reflect_on_wellbeing
+from healthclaw.core.config import get_settings
 from healthclaw.db.models import (
     ChannelAccount,
     ConversationThread,
+    HeartbeatEvent,
+    Message,
+    OpenLoop,
     ProactiveEvent,
     Reminder,
     User,
+    UserEngagementState,
 )
+from healthclaw.engagement.metrics import build_relationship_context
 
 
 class ProactivityService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self._settings = get_settings()
 
     async def due_reminders(self, now: datetime) -> list[Reminder]:
         result = await self.session.execute(
@@ -57,54 +65,105 @@ class ProactivityService:
         await self.session.flush()
         return reminder
 
-    async def should_send(self, reminder: Reminder, now: datetime) -> tuple[bool, str]:
+    async def should_send(self, reminder: Reminder, now: datetime) -> WellbeingDecision:
         user = await self.session.get(User, reminder.user_id)
         if user is None:
-            return False, "user_not_found"
+            return WellbeingDecision(
+                reach_out=False,
+                when="hold",
+                message_seed="",
+                rationale="user not found",
+                model=None,
+                decision_input={"candidate": {"kind": "reminder", "channel": reminder.channel}},
+            )
         if not user.proactive_enabled:
-            return False, "proactive_disabled"
-        if user.proactive_paused_until is not None and user.proactive_paused_until > now:
-            return False, "proactive_paused"
-        if user.monthly_llm_tokens_used >= user.monthly_llm_token_budget:
-            return False, "quota_exceeded"
+            return WellbeingDecision(
+                reach_out=False,
+                when="hold",
+                message_seed="",
+                rationale="proactive outreach disabled",
+                model=None,
+                decision_input={"candidate": {"kind": "reminder", "channel": reminder.channel}},
+            )
+
         time_context = build_time_context(user, now=now)
-        if time_context.quiet_hours:
-            return False, "quiet_hours"
-        cooldown_start = now - timedelta(minutes=user.proactive_cooldown_minutes)
-        recent_sent = await self.session.execute(
-            select(ProactiveEvent)
-            .where(
-                ProactiveEvent.user_id == user.id,
-                ProactiveEvent.decision == "sent",
-                ProactiveEvent.created_at >= cooldown_start,
-            )
-            .limit(1)
+        open_loops_result = await self.session.execute(
+            select(OpenLoop).where(OpenLoop.user_id == user.id, OpenLoop.status == "open").limit(10)
         )
-        if recent_sent.scalar_one_or_none() is not None:
-            return False, "cooldown"
+        open_loops = list(open_loops_result.scalars())
 
-        day_start = now - timedelta(hours=24)
-        sent_today = await self.session.execute(
-            select(ProactiveEvent).where(
-                ProactiveEvent.user_id == user.id,
-                ProactiveEvent.decision == "sent",
-                ProactiveEvent.created_at >= day_start,
-            )
+        msgs_result = await self.session.execute(
+            select(Message)
+            .where(Message.user_id == user.id, Message.role.in_(["user", "assistant"]))
+            .order_by(Message.created_at.desc())
+            .limit(6)
         )
-        if len(list(sent_today.scalars())) >= user.proactive_max_per_day:
-            return False, "daily_limit"
+        recent_msgs = list(reversed(list(msgs_result.scalars())))
+        recent_exchanges = [
+            {"role": message.role, "content": message.content[:200]}
+            for message in recent_msgs
+        ]
 
-        recent_activity = await self.session.execute(
-            select(ConversationThread)
-            .where(
-                ConversationThread.user_id == user.id,
-                ConversationThread.last_message_at >= now - timedelta(minutes=15),
-            )
-            .limit(1)
+        engagement = await self._engagement_state(user.id)
+        relationship = build_relationship_context(engagement, now=now)
+        outbound_count_24h, last_outbound_at = await self._outbound_activity(user.id, now=now)
+        recent_activity = await self._recent_activity_at(user.id)
+        candidate = {
+            "kind": "reminder",
+            "channel": reminder.channel,
+            "details": {
+                "text": reminder.text[:240],
+                "due_at": _iso(reminder.due_at),
+                "recent_thread_activity_at": _iso(recent_activity),
+            },
+        }
+        decision_input = {
+            "user_id": user.id,
+            "source_kind": "reminder",
+            "time_context": time_context.to_dict(),
+            "user_profile": {
+                "timezone": user.timezone,
+                "quiet_window": {"start": user.quiet_start, "end": user.quiet_end},
+                "proactive_paused_until": _iso(user.proactive_paused_until),
+                "last_active_at": _iso(user.last_active_at),
+                "heartbeat_profile": user.heartbeat_md[:1200],
+            },
+            "relationship": _serialize_relationship(relationship),
+            "open_loops": [
+                {
+                    "id": loop.id,
+                    "title": loop.title,
+                    "kind": loop.kind,
+                    "age_hours": _age_hours(loop.created_at, now),
+                }
+                for loop in open_loops[:5]
+            ],
+            "recent_exchanges": recent_exchanges[-3:],
+            "delivery_context": {
+                "outbound_count_24h": outbound_count_24h,
+                "last_outbound_at": _iso(last_outbound_at),
+                "daily_cap": user.proactive_max_per_day,
+                "monthly_llm_tokens_used": user.monthly_llm_tokens_used,
+                "monthly_llm_token_budget": user.monthly_llm_token_budget,
+            },
+            "candidate": candidate,
+        }
+        reflection = await reflect_on_wellbeing(
+            settings=self._settings,
+            user_id=user.id,
+            decision_input=decision_input,
+            metadata={"channel": reminder.channel, "source_kind": "reminder"},
         )
-        if recent_activity.scalar_one_or_none() is not None:
-            return False, "recent_activity"
-        return True, "eligible"
+        if outbound_count_24h >= user.proactive_max_per_day:
+            return WellbeingDecision(
+                reach_out=False,
+                when="hold",
+                message_seed="",
+                rationale="daily delivery cap reached",
+                model=reflection.model,
+                decision_input={**decision_input, "delivery_floor_applied": True},
+            )
+        return reflection
 
     async def record_decision(
         self,
@@ -139,3 +198,87 @@ class ProactivityService:
         if user_id.startswith(prefix):
             return user_id.removeprefix(prefix)
         return None
+
+    async def _engagement_state(self, user_id: str) -> UserEngagementState | None:
+        result = await self.session.execute(
+            select(UserEngagementState).where(UserEngagementState.user_id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def _recent_activity_at(self, user_id: str) -> datetime | None:
+        result = await self.session.execute(
+            select(ConversationThread.last_message_at)
+            .where(ConversationThread.user_id == user_id)
+            .order_by(ConversationThread.last_message_at.desc())
+            .limit(1)
+        )
+        value = result.scalar_one_or_none()
+        if value is None:
+            return None
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+    async def _outbound_activity(
+        self,
+        user_id: str,
+        *,
+        now: datetime,
+    ) -> tuple[int, datetime | None]:
+        day_start = now - timedelta(hours=24)
+        proactive_stats = (
+            await self.session.execute(
+                select(func.count(), func.max(ProactiveEvent.created_at)).where(
+                    ProactiveEvent.user_id == user_id,
+                    ProactiveEvent.decision == "sent",
+                    ProactiveEvent.created_at >= day_start,
+                )
+            )
+        ).one()
+        heartbeat_stats = (
+            await self.session.execute(
+                select(func.count(), func.max(HeartbeatEvent.created_at)).where(
+                    HeartbeatEvent.user_id == user_id,
+                    HeartbeatEvent.decision == "sent",
+                    HeartbeatEvent.created_at >= day_start,
+                )
+            )
+        ).one()
+        proactive_count, proactive_last = proactive_stats
+        heartbeat_count, heartbeat_last = heartbeat_stats
+        return int(proactive_count or 0) + int(heartbeat_count or 0), _latest_datetime(
+            proactive_last,
+            heartbeat_last,
+        )
+
+
+def _serialize_relationship(relationship: dict[str, object]) -> dict[str, object]:
+    payload = dict(relationship)
+    last_meaningful = payload.get("last_meaningful_exchange_at")
+    if isinstance(last_meaningful, datetime):
+        payload["last_meaningful_exchange_at"] = _iso(last_meaningful)
+    return payload
+
+
+def _age_hours(created_at: datetime | None, now: datetime) -> float:
+    if created_at is None:
+        return 0.0
+    created = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+    return (now.astimezone(UTC) - created.astimezone(UTC)).total_seconds() / 3600
+
+
+def _latest_datetime(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    normalized = [
+        value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        for value in present
+    ]
+    return max(normalized)
+
+
+def _iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()

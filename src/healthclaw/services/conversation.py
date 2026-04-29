@@ -20,6 +20,7 @@ from healthclaw.db.models import (
     InboundEvent,
     Message,
     OpenLoop,
+    ProposedAction,
     Ritual,
     SafetyEvent,
     TraceRef,
@@ -43,9 +44,9 @@ from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.memory.service import MemoryService
 from healthclaw.proactivity.service import ProactivityService
 from healthclaw.schemas.actions import (
-    CloseOpenLoopAction,
-    CreateOpenLoopAction,
-    CreateReminderAction,
+    CloseOpenLoopPayload,
+    CreateOpenLoopPayload,
+    CreateReminderPayload,
 )
 from healthclaw.schemas.events import ConversationEvent
 from healthclaw.schemas.memory import MemoryMutation
@@ -496,11 +497,18 @@ class ConversationService:
         dropped = list(
             state.get("trace_metadata", {}).get("action_execution", {}).get("dropped", [])
         )
+        proposed: list[dict[str, object]] = []
         for raw_action in state.get("actions_taken", []):
             action_type = str(raw_action.get("type") or "")
+            payload = (
+                raw_action.get("payload")
+                if isinstance(raw_action.get("payload"), dict)
+                else {}
+            )
+            rationale = str(raw_action.get("rationale") or "").strip() or None
             try:
                 if action_type == "create_reminder":
-                    action = CreateReminderAction.model_validate(raw_action)
+                    action = CreateReminderPayload.model_validate(payload)
                     due_at = self._parse_iso_datetime(action.due_at_iso)
                     if due_at is None:
                         dropped.append({"type": action_type, "reason": "due_at_invalid"})
@@ -514,7 +522,7 @@ class ConversationService:
                     )
                     executed.append({"type": action_type, "id": reminder.id})
                 elif action_type == "create_open_loop":
-                    action = CreateOpenLoopAction.model_validate(raw_action)
+                    action = CreateOpenLoopPayload.model_validate(payload)
                     due_after = self._parse_iso_datetime(action.due_after_iso)
                     loop = await heartbeat.create_open_loop(
                         user_id=user.id,
@@ -526,7 +534,7 @@ class ConversationService:
                     )
                     executed.append({"type": action_type, "id": loop.id})
                 elif action_type == "close_open_loop":
-                    action = CloseOpenLoopAction.model_validate(raw_action)
+                    action = CloseOpenLoopPayload.model_validate(payload)
                     async with start_span(
                         "loop.close.execute",
                         attributes={
@@ -584,8 +592,34 @@ class ConversationService:
                             "outcome": action.outcome,
                         }
                     )
+                elif action_type and action_type != "none":
+                    proposed_action = ProposedAction(
+                        user_id=user.id,
+                        type=action_type[:128],
+                        payload=payload,
+                        rationale=rationale,
+                        status="unknown_type",
+                    )
+                    self.session.add(proposed_action)
+                    await self.session.flush()
+                    proposed.append({"type": action_type, "id": proposed_action.id})
+                    executed.append(
+                        {
+                            "type": action_type,
+                            "id": proposed_action.id,
+                            "status": "unknown_type",
+                        }
+                    )
             except Exception:
                 dropped.append({"type": action_type or "unknown", "reason": "execution_error"})
+
+        if proposed:
+            proposed_types = ", ".join(str(item["type"]) for item in proposed[:3])
+            state["response"] = (
+                state["response"].rstrip()
+                + "\n\n"
+                + f"I tried to handle {proposed_types}, but I don't have that capability yet."
+            )
 
         state["actions_taken"] = executed
         action_types = [str(item.get("type") or "") for item in executed]
@@ -596,6 +630,7 @@ class ConversationService:
             .get("action_execution", {})
             .get("action.consistency", "ok"),
             "dropped": dropped,
+            "proposed": proposed,
         }
         state.setdefault("trace_metadata", {})["action_execution"] = execution_trace
 

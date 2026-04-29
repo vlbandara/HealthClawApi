@@ -10,18 +10,6 @@ from healthclaw.schemas.memory import MemoryMutation
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_LLM_KINDS = {
-    "profile",
-    "goal",
-    "routine",
-    "friction",
-    "commitment",
-    "open_loop",
-    "relationship",
-    "episode",
-    "preference",
-}
-
 
 async def extract_memory_mutations_enriched(content: str) -> list[MemoryMutation]:
     mutations: list[MemoryMutation] = []
@@ -36,9 +24,8 @@ async def extract_memory_mutations_enriched(content: str) -> list[MemoryMutation
             "content": (
                 "Extract durable wellness companion memory as JSON only. "
                 "Return an array of objects with kind, key, value, confidence, reason, and layer. "
-                "Allowed kinds: profile, goal, routine, friction, commitment, open_loop, "
-                "relationship, episode, preference. Do not create medical, crisis, consent, "
-                "or diagnosis policy memories."
+                "Use a short, stable string for kind and key. "
+                "Prefer durable, behaviorally useful memory."
             ),
         },
         {"role": "user", "content": content},
@@ -74,9 +61,9 @@ async def extract_memory_mutations_enriched(content: str) -> list[MemoryMutation
     for raw in raw_items[:6]:
         if not isinstance(raw, dict):
             continue
-        kind = str(raw.get("kind", ""))
+        kind = str(raw.get("kind", "")).strip()[:64]
         key = str(raw.get("key", ""))[:128]
-        if kind not in ALLOWED_LLM_KINDS or not key or (kind, key) in seen:
+        if not kind or not key or (kind, key) in seen:
             continue
         value = raw.get("value")
         if not isinstance(value, dict):

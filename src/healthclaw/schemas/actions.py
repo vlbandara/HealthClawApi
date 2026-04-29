@@ -1,33 +1,29 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class CreateReminderAction(BaseModel):
-    type: Literal["create_reminder"]
+class Action(BaseModel):
+    type: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    rationale: str | None = None
+
+
+class CreateReminderPayload(BaseModel):
     text: str = Field(..., max_length=1000)
     due_at_iso: str
     idempotency_key: str | None = None
 
 
-class CreateOpenLoopAction(BaseModel):
-    type: Literal["create_open_loop"]
+class CreateOpenLoopPayload(BaseModel):
     title: str = Field(..., max_length=240)
-    kind: Literal["commitment", "open_loop"] = "commitment"
+    kind: str = "commitment"
     due_after_iso: str | None = None
 
 
-class CloseOpenLoopAction(BaseModel):
-    type: Literal["close_open_loop"]
+class CloseOpenLoopPayload(BaseModel):
     id: str
     summary: str = Field(..., max_length=500)
     outcome: Literal["completed", "dropped", "reframed"]
-
-
-class NoneAction(BaseModel):
-    type: Literal["none"]
-
-
-Action = CreateReminderAction | CreateOpenLoopAction | CloseOpenLoopAction | NoneAction

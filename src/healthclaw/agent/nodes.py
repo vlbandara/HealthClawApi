@@ -10,7 +10,12 @@ from healthclaw.agent.time_context import TimeContext, build_time_context
 from healthclaw.core.tracing import traced_node
 from healthclaw.engagement.metrics import is_meaningful_exchange
 from healthclaw.memory.extractors import extract_memory_mutations_enriched
-from healthclaw.schemas.actions import Action
+from healthclaw.schemas.actions import (
+    Action,
+    CloseOpenLoopPayload,
+    CreateOpenLoopPayload,
+    CreateReminderPayload,
+)
 
 ACTION_ADAPTER = TypeAdapter(Action)
 
@@ -111,11 +116,13 @@ async def decide_proactivity(state: AgentState) -> AgentState:
     observable_signals = state.get("observable_signals", {})
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
-        "proactive_candidate": not state["time_context"]["quiet_hours"],
-        "proactive_signals": {
+        "wellbeing_signals": {
             "quiet_hours": state["time_context"]["quiet_hours"],
+            "part_of_day": state["time_context"]["part_of_day"],
+            "interaction_gap_days": state["time_context"].get("interaction_gap_days"),
             "message_length": observable_signals.get("message_length"),
             "content_type": observable_signals.get("content_type"),
+            "has_attachments": observable_signals.get("has_attachments"),
         },
     }
     state["trace_metadata"]["nodes"] = [
@@ -133,45 +140,77 @@ async def execute_actions(state: AgentState) -> AgentState:
 
     for raw_action in raw_actions:
         try:
-            action = ACTION_ADAPTER.validate_python(raw_action)
+            normalized = _normalize_action_input(raw_action)
+            action = ACTION_ADAPTER.validate_python(normalized)
         except ValidationError:
             dropped.append({"reason": "validation_error"})
             continue
 
         action_data = action.model_dump(mode="json")
         action_type = str(action_data.get("type") or "")
+        payload = action_data.get("payload") if isinstance(action_data.get("payload"), dict) else {}
         if action_type == "create_reminder":
-            due_at_iso = str(action_data.get("due_at_iso") or "")
+            try:
+                reminder = CreateReminderPayload.model_validate(payload)
+            except ValidationError:
+                dropped.append({"type": action_type, "reason": "payload_invalid"})
+                continue
+            due_at_iso = str(reminder.due_at_iso or "")
             try:
                 parsed = datetime.fromisoformat(due_at_iso.replace("Z", "+00:00"))
                 parsed = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
             except ValueError:
-                dropped.append({"type": "create_reminder", "reason": "due_at_invalid"})
+                dropped.append({"type": action_type, "reason": "due_at_invalid"})
                 continue
-            action_data["due_at_iso"] = parsed.astimezone(UTC).isoformat()
+            payload = {
+                **reminder.model_dump(mode="json"),
+                "due_at_iso": parsed.astimezone(UTC).isoformat(),
+            }
         elif action_type == "create_open_loop":
-            due_after_iso = action_data.get("due_after_iso")
+            try:
+                open_loop = CreateOpenLoopPayload.model_validate(payload)
+            except ValidationError:
+                dropped.append({"type": action_type, "reason": "payload_invalid"})
+                continue
+            due_after_iso = open_loop.due_after_iso
             if isinstance(due_after_iso, str) and due_after_iso:
                 try:
                     parsed = datetime.fromisoformat(due_after_iso.replace("Z", "+00:00"))
                     parsed = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-                    action_data["due_after_iso"] = parsed.astimezone(UTC).isoformat()
+                    payload = {
+                        **open_loop.model_dump(mode="json"),
+                        "due_after_iso": parsed.astimezone(UTC).isoformat(),
+                    }
                 except ValueError:
-                    action_data["due_after_iso"] = None
+                    payload = {**open_loop.model_dump(mode="json"), "due_after_iso": None}
+            else:
+                payload = open_loop.model_dump(mode="json")
+        elif action_type == "close_open_loop":
+            try:
+                payload = CloseOpenLoopPayload.model_validate(payload).model_dump(mode="json")
+            except ValidationError:
+                dropped.append({"type": action_type, "reason": "payload_invalid"})
+                continue
 
         if action_type != "none":
-            actions_taken.append(action_data)
-            state.setdefault("memory_mutations", []).append(
-                {
-                    "kind": "commitment",
-                    "key": f"action:{action_type}",
-                    "value": {"text": _action_memory_text(action_data)},
-                    "confidence": 0.72,
-                    "reason": "Action channel execution.",
-                    "layer": "open_loop",
-                    "metadata": {"skip_open_loop_creation": True},
-                }
-            )
+            normalized_action = {
+                "type": action_type,
+                "payload": payload,
+                "rationale": action_data.get("rationale"),
+            }
+            actions_taken.append(normalized_action)
+            if action_type in {"create_reminder", "create_open_loop", "close_open_loop"}:
+                state.setdefault("memory_mutations", []).append(
+                    {
+                        "kind": "commitment",
+                        "key": f"action:{action_type}",
+                        "value": {"text": _action_memory_text(action_type, payload)},
+                        "confidence": 0.72,
+                        "reason": "Action channel execution.",
+                        "layer": "open_loop",
+                        "metadata": {"skip_open_loop_creation": True},
+                    }
+                )
 
     action_types = [str(a.get("type") or "") for a in actions_taken]
 
@@ -235,20 +274,37 @@ async def update_memory(state: AgentState) -> AgentState:
     return state
 
 
-def _action_memory_text(action_data: dict) -> str:
-    action_type = str(action_data.get("type") or "")
+def _action_memory_text(action_type: str, payload: dict[str, object]) -> str:
     if action_type == "create_reminder":
-        text = action_data.get("text", "")
-        due = action_data.get("due_at_iso", "")
+        text = payload.get("text", "")
+        due = payload.get("due_at_iso", "")
         return f"reminder: {text} at {due}".strip()
     if action_type == "create_open_loop":
-        return f"open loop: {action_data.get('title', '')}".strip()
+        return f"open loop: {payload.get('title', '')}".strip()
     if action_type == "close_open_loop":
-        loop_id = action_data.get("id", "")
-        summary = action_data.get("summary", "")
-        outcome = action_data.get("outcome", "")
+        loop_id = payload.get("id", "")
+        summary = payload.get("summary", "")
+        outcome = payload.get("outcome", "")
         return f"closed loop ({outcome}): {loop_id} - {summary}".strip()
     return action_type
+
+
+def _normalize_action_input(raw_action: object) -> dict[str, object]:
+    if not isinstance(raw_action, dict):
+        return {}
+    payload = raw_action.get("payload")
+    if not isinstance(payload, dict):
+        payload = {
+            str(key): value
+            for key, value in raw_action.items()
+            if key not in {"type", "rationale", "payload"}
+        }
+    rationale = raw_action.get("rationale")
+    return {
+        "type": str(raw_action.get("type") or ""),
+        "payload": payload,
+        "rationale": str(rationale) if rationale is not None else None,
+    }
 
 
 @traced_node("trace_eval_logging")

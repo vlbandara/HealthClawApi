@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
+from healthclaw.agent.wellbeing import parse_delay_minutes
 from healthclaw.channels.telegram import TelegramAdapter
 from healthclaw.core.config import get_settings
 from healthclaw.core.tracing import new_trace_id
@@ -28,15 +29,26 @@ async def process_due_reminders() -> dict[str, int]:
         for reminder in reminders:
             now = datetime.now(UTC)
             trace_id = new_trace_id()
-            eligible, reason = await service.should_send(reminder, now)
-            if not eligible:
-                if reason == "quiet_hours":
-                    reminder.due_at = now + timedelta(minutes=30)
-                    await service.record_decision(reminder, "deferred", reason, trace_id=trace_id)
+            decision = await service.should_send(reminder, now)
+            if not decision.reach_out or decision.when != "now":
+                delay_minutes = parse_delay_minutes(decision.when)
+                if delay_minutes is not None:
+                    reminder.due_at = now + timedelta(minutes=delay_minutes)
+                    await service.record_decision(
+                        reminder,
+                        "deferred",
+                        decision.rationale,
+                        trace_id=trace_id,
+                    )
                     deferred += 1
                 else:
                     reminder.status = "suppressed"
-                    await service.record_decision(reminder, "suppressed", reason, trace_id=trace_id)
+                    await service.record_decision(
+                        reminder,
+                        "suppressed",
+                        decision.rationale,
+                        trace_id=trace_id,
+                    )
                     suppressed += 1
                 continue
 
@@ -64,8 +76,9 @@ async def process_due_reminders() -> dict[str, int]:
                     failed += 1
                     continue
             try:
+                reminder_text = decision.message_seed or reminder.text
                 await telegram.send_status(external_id, "typing", bot_token=bot_token)
-                await telegram.send_message(external_id, reminder.text, bot_token=bot_token)
+                await telegram.send_message(external_id, reminder_text, bot_token=bot_token)
             except Exception:
                 reminder.status = "failed"
                 reminder.last_error = "send_error"
@@ -76,7 +89,12 @@ async def process_due_reminders() -> dict[str, int]:
                 reminder.status = "sent"
                 reminder.sent_at = datetime.now(UTC)
                 reminder.attempts += 1
-                await service.record_decision(reminder, "sent", reason, trace_id=trace_id)
+                await service.record_decision(
+                    reminder,
+                    "sent",
+                    decision.rationale,
+                    trace_id=trace_id,
+                )
                 sent += 1
         await session.commit()
         result = {
@@ -178,25 +196,33 @@ async def process_due_heartbeats() -> dict[str, int]:
                 continue
 
             # Soft gate: LLM skip/run decision
-            (
-                decision,
-                action,
-                soft_reason,
-                decision_input,
-                decision_model,
-            ) = await heartbeat.should_send_soft(job, user, now)
-            if decision == "skip":
-                job.status = "suppressed"
-                await heartbeat.record_event(
-                    job,
-                    "suppressed",
-                    f"soft_gate:{soft_reason}",
-                    trace_id=trace_id,
-                    decision_input=decision_input,
-                    decision_model=decision_model,
-                    skip_reason=soft_reason,
-                )
-                soft_skipped += 1
+            reflection = await heartbeat.should_send_soft(job, user, now)
+            if not reflection.reach_out or reflection.when != "now":
+                delay_minutes = parse_delay_minutes(reflection.when)
+                if delay_minutes is not None:
+                    job.due_at = now + timedelta(minutes=delay_minutes)
+                    await heartbeat.record_event(
+                        job,
+                        "deferred",
+                        reflection.rationale,
+                        trace_id=trace_id,
+                        decision_input=reflection.decision_input,
+                        decision_model=reflection.model,
+                        skip_reason=reflection.when,
+                    )
+                    deferred += 1
+                else:
+                    job.status = "suppressed"
+                    await heartbeat.record_event(
+                        job,
+                        "suppressed",
+                        reflection.rationale,
+                        trace_id=trace_id,
+                        decision_input=reflection.decision_input,
+                        decision_model=reflection.model,
+                        skip_reason=reflection.when,
+                    )
+                    soft_skipped += 1
                 continue
 
             external_id = await proactivity.external_channel_id(job.user_id, job.channel)
@@ -222,13 +248,13 @@ async def process_due_heartbeats() -> dict[str, int]:
                         "failed",
                         "bot_token_unavailable",
                         trace_id=trace_id,
-                        decision_input=decision_input,
-                        decision_model=decision_model,
+                        decision_input=reflection.decision_input,
+                        decision_model=reflection.model,
                     )
                     failed += 1
                     continue
             try:
-                message_text = await heartbeat.render_job(job, action_override=action)
+                message_text = reflection.message_seed or await heartbeat.render_job(job)
                 await telegram.send_status(external_id, "typing", bot_token=bot_token)
                 await telegram.send_message(external_id, message_text, bot_token=bot_token)
             except Exception:
@@ -240,8 +266,8 @@ async def process_due_heartbeats() -> dict[str, int]:
                     "failed",
                     "send_error",
                     trace_id=trace_id,
-                    decision_input=decision_input,
-                    decision_model=decision_model,
+                    decision_input=reflection.decision_input,
+                    decision_model=reflection.model,
                 )
                 failed += 1
             else:
@@ -251,10 +277,10 @@ async def process_due_heartbeats() -> dict[str, int]:
                 await heartbeat.record_event(
                     job,
                     "sent",
-                    reason,
+                    reflection.rationale,
                     trace_id=trace_id,
-                    decision_input=decision_input,
-                    decision_model=decision_model,
+                    decision_input=reflection.decision_input,
+                    decision_model=reflection.model,
                 )
                 sent += 1
 
