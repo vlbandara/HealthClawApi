@@ -103,6 +103,7 @@ async def test_node_spans_emitted_in_order(configured_tracer, in_memory_exporter
             "agent.time_context",
             "agent.memory_retrieval",
             "agent.companion_response",
+            "agent.execute_actions",
             "agent.proactive_policy",
             "agent.memory_update",
             "agent.trace_eval_logging",

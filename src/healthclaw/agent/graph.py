@@ -6,6 +6,7 @@ from healthclaw.agent.nodes import (
     assemble_time_context,
     classify_scope_and_safety,
     decide_proactivity,
+    execute_actions,
     generate_response,
     log_trace,
     normalize_input,
@@ -22,6 +23,7 @@ def build_agent_graph():
     graph.add_node("time_context", assemble_time_context)
     graph.add_node("memory_retrieval", retrieve_memory)
     graph.add_node("companion_response", generate_response)
+    graph.add_node("execute_actions", execute_actions)
     graph.add_node("proactive_policy", decide_proactivity)
     graph.add_node("memory_update", update_memory)
     graph.add_node("trace_eval_logging", log_trace)
@@ -31,7 +33,8 @@ def build_agent_graph():
     graph.add_edge("safety_and_scope", "time_context")
     graph.add_edge("time_context", "memory_retrieval")
     graph.add_edge("memory_retrieval", "companion_response")
-    graph.add_edge("companion_response", "proactive_policy")
+    graph.add_edge("companion_response", "execute_actions")
+    graph.add_edge("execute_actions", "proactive_policy")
     graph.add_edge("proactive_policy", "memory_update")
     graph.add_edge("memory_update", "trace_eval_logging")
     graph.add_edge("trace_eval_logging", END)

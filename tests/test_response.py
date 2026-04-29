@@ -27,7 +27,7 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
         fake_chat_completion,
     )
 
-    response, metadata = await generate_companion_response(
+    generation, metadata = await generate_companion_response(
         user_content="I am trying to restart the routine.",
         safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
@@ -46,7 +46,7 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
     )
 
     prompt = captured_messages[-1]["content"]
-    assert response == "Relationship-aware reply"
+    assert generation.message == "Relationship-aware reply"
     assert metadata["provider"] == "openrouter"
     assert isinstance(metadata.get("streaks_surfaced"), bool)
     assert "<relationship_signals>" in prompt
@@ -75,7 +75,7 @@ async def test_generate_companion_response_surfaces_streak_block_when_gated(monk
         fake_chat_completion,
     )
 
-    response, metadata = await generate_companion_response(
+    generation, metadata = await generate_companion_response(
         user_content="Quick check-in.",
         safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
@@ -94,7 +94,7 @@ async def test_generate_companion_response_surfaces_streak_block_when_gated(monk
     )
 
     system_prompt = captured_messages[0]["content"]
-    assert response == "Streak-aware reply"
+    assert generation.message == "Streak-aware reply"
     assert metadata["streaks_surfaced"] is True
     assert "# Active rituals" in system_prompt
     assert "morning_check_in" in system_prompt
@@ -120,7 +120,7 @@ async def test_generate_companion_response_includes_conversation_digest(monkeypa
         fake_chat_completion,
     )
 
-    response, metadata = await generate_companion_response(
+    generation, metadata = await generate_companion_response(
         user_content="Keep going.",
         safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
@@ -131,7 +131,7 @@ async def test_generate_companion_response_includes_conversation_digest(monkeypa
     )
 
     prompt = captured_messages[-1]["content"]
-    assert response == "Digest-aware reply"
+    assert generation.message == "Digest-aware reply"
     assert metadata["conversation_digest_used"] is True
     assert "# Conversation Digest" in prompt
     assert "sleep slipped after late-night scrolling" in prompt
