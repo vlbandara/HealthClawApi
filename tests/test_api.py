@@ -10,6 +10,7 @@ from healthclaw.db.models import (
     InboundEvent,
     Message,
     OpenLoop,
+    Reminder,
     Ritual,
     TraceRef,
     User,
@@ -527,3 +528,32 @@ async def test_memory_endpoint_returns_markdown_documents(client: AsyncClient) -
     }
     assert "Preferred name: Vinodh" in documents["USER"]
     assert "sleep by 10pm" in documents["MEMORY"]
+
+
+async def test_reminders_endpoint_still_creates_row(client: AsyncClient) -> None:
+    response = await client.post(
+        "/v1/reminders",
+        json={
+            "user_id": "u-reminder-api",
+            "text": "drink water",
+            "due_at": "2026-04-28T14:30:00Z",
+            "channel": "telegram",
+            "idempotency_key": "reminder:u-reminder-api:test",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["text"] == "drink water"
+    assert body["status"] == "scheduled"
+
+    async with SessionLocal() as session:
+        reminders = list(
+            (
+                await session.execute(
+                    select(Reminder).where(
+                        Reminder.idempotency_key == "reminder:u-reminder-api:test"
+                    )
+                )
+            ).scalars()
+        )
+    assert len(reminders) == 1

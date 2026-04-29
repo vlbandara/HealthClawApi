@@ -25,6 +25,38 @@ class ProactivityService:
         )
         return list(result.scalars())
 
+    async def create_reminder(
+        self,
+        *,
+        user_id: str,
+        text: str,
+        due_at: datetime,
+        channel: str = "telegram",
+        idempotency_key: str | None = None,
+    ) -> Reminder:
+        key = idempotency_key
+        if key:
+            existing = await self.session.execute(
+                select(Reminder).where(Reminder.idempotency_key == key).limit(1)
+            )
+            reminder = existing.scalar_one_or_none()
+            if reminder is not None:
+                return reminder
+        else:
+            key = f"reminder:{user_id}:{int(due_at.timestamp())}:{text[:40].strip().lower()}"
+
+        reminder = Reminder(
+            user_id=user_id,
+            text=text,
+            due_at=due_at,
+            channel=channel,
+            status="scheduled",
+            idempotency_key=key,
+        )
+        self.session.add(reminder)
+        await self.session.flush()
+        return reminder
+
     async def should_send(self, reminder: Reminder, now: datetime) -> tuple[bool, str]:
         user = await self.session.get(User, reminder.user_id)
         if user is None:

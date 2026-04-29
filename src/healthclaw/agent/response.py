@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from healthclaw.agent.safety import SafetyDecision
@@ -9,6 +11,23 @@ from healthclaw.core.config import get_settings
 from healthclaw.integrations.openrouter import OpenRouterClient
 
 MemoryLike = dict[str, object]
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    message: str
+    actions: list[dict[str, object]]
+    memory_proposals: list[dict[str, object]]
+
+
+ACTION_OUTPUT_CONTRACT = (
+    "Output a single JSON object with exactly these keys: "
+    '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation]}. '
+    "Allowed action types are create_reminder, create_open_loop, close_open_loop, and none. "
+    "Only state that you set, created, or scheduled something "
+    "when the matching action appears in actions. "
+    "If timing/details are uncertain, ask the user instead of guessing."
+)
 
 
 def _deterministic_companion_response(
@@ -129,7 +148,7 @@ async def generate_companion_response(
     safety_category: str | None = None,
     thread_summary: str | None = None,
     relationship_signals: list[str] | None = None,
-) -> tuple[str, dict[str, object]]:
+) -> tuple[GenerationResult, dict[str, object]]:
     user_context = user_context or {}
     trust_band = trust_band_label(_trust_level(user_context))
     safety_category = safety_category or safety.category
@@ -138,7 +157,13 @@ async def generate_companion_response(
 
     if safety.category != "wellness":
         return (
-            _deterministic_companion_response(user_content, safety, time_context, memories),
+            GenerationResult(
+                message=_deterministic_companion_response(
+                    user_content, safety, time_context, memories
+                ),
+                actions=[],
+                memory_proposals=[],
+            ),
             {
                 "provider": "deterministic",
                 "reason": safety.category,
@@ -151,7 +176,13 @@ async def generate_companion_response(
     client = OpenRouterClient(settings)
     if not client.enabled:
         return (
-            _deterministic_companion_response(user_content, safety, time_context, memories),
+            GenerationResult(
+                message=_deterministic_companion_response(
+                    user_content, safety, time_context, memories
+                ),
+                actions=[],
+                memory_proposals=[],
+            ),
             {
                 "provider": "deterministic",
                 "reason": "openrouter_not_configured",
@@ -205,7 +236,9 @@ async def generate_companion_response(
                 trust_level=_trust_level(user_context),
                 streaks=streaks,
                 safety_category=safety_category,
-            ),
+            )
+            + "\n\n# Action Output Contract\n\n"
+            + ACTION_OUTPUT_CONTRACT,
         },
         {
             "role": "user",
@@ -241,7 +274,13 @@ async def generate_companion_response(
         )
     except RuntimeError:
         return (
-            _deterministic_companion_response(user_content, safety, time_context, memories),
+            GenerationResult(
+                message=_deterministic_companion_response(
+                    user_content, safety, time_context, memories
+                ),
+                actions=[],
+                memory_proposals=[],
+            ),
             {
                 "provider": "deterministic",
                 "reason": "openrouter_error",
@@ -249,8 +288,9 @@ async def generate_companion_response(
                 "streaks_surfaced": False,
             },
         )
+    generation_result, parse_error = _parse_generation_payload(result.content)
     return (
-        result.content,
+        generation_result,
         {
             "provider": "openrouter",
             "model": result.model,
@@ -260,8 +300,45 @@ async def generate_companion_response(
             "conversation_digest_used": bool(conversation_digest),
             "trust_band": trust_band,
             "streaks_surfaced": streaks_surfaced,
+            "actions.parse_error": parse_error,
         },
     )
+
+
+def _parse_generation_payload(raw_content: str) -> tuple[GenerationResult, bool]:
+    normalized = _strip_json_fence(raw_content.strip())
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError:
+        return GenerationResult(message=raw_content.strip(), actions=[], memory_proposals=[]), True
+    if not isinstance(payload, dict):
+        return GenerationResult(message=raw_content.strip(), actions=[], memory_proposals=[]), True
+    message = payload.get("message")
+    actions = payload.get("actions")
+    memory_proposals = payload.get("memory_proposals")
+    return (
+        GenerationResult(
+            message=str(message or raw_content).strip(),
+            actions=actions if isinstance(actions, list) else [],
+            memory_proposals=memory_proposals if isinstance(memory_proposals, list) else [],
+        ),
+        False,
+    )
+
+
+def _strip_json_fence(content: str) -> str:
+    if not content.startswith("```"):
+        return content
+    body = content
+    if body.startswith("```json"):
+        body = body[len("```json") :]
+    elif body.startswith("```JSON"):
+        body = body[len("```JSON") :]
+    else:
+        body = body[3:]
+    if body.endswith("```"):
+        body = body[:-3]
+    return body.strip()
 
 
 def _trust_level(user_context: dict[str, object]) -> float | None:

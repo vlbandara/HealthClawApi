@@ -39,6 +39,12 @@ from healthclaw.heartbeat.streaks import RitualStreakService
 from healthclaw.memory.documents import MarkdownMemoryService
 from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.memory.service import MemoryService
+from healthclaw.proactivity.service import ProactivityService
+from healthclaw.schemas.actions import (
+    CloseOpenLoopAction,
+    CreateOpenLoopAction,
+    CreateReminderAction,
+)
 from healthclaw.schemas.events import ConversationEvent
 from healthclaw.schemas.memory import MemoryMutation
 from healthclaw.schemas.messages import MessageResponse
@@ -320,6 +326,12 @@ class ConversationService:
                 },
             },
         )
+        await self._execute_actions(
+            state=state,
+            user=user,
+            thread=thread,
+            user_message=user_message,
+        )
 
         assistant_message = Message(
             thread_id=thread.id,
@@ -387,7 +399,9 @@ class ConversationService:
                     "confidence": memory.confidence,
                 }
             )
-            if mutation.kind in {"commitment", "open_loop"}:
+            if mutation.kind in {"commitment", "open_loop"} and not bool(
+                mutation.metadata.get("skip_open_loop_creation")
+            ):
                 title = str(
                     mutation.value.get("text") or mutation.value.get("summary") or mutation.key
                 )
@@ -462,6 +476,100 @@ class ConversationService:
         await self.session.commit()
 
         return MessageResponse(**response_payload)
+
+    async def _execute_actions(
+        self,
+        *,
+        state: dict,
+        user: User,
+        thread: ConversationThread,
+        user_message: Message,
+    ) -> None:
+        heartbeat = HeartbeatService(self.session)
+        proactivity = ProactivityService(self.session)
+        executed: list[dict[str, object]] = []
+        dropped = list(
+            state.get("trace_metadata", {}).get("action_execution", {}).get("dropped", [])
+        )
+        for raw_action in state.get("actions_taken", []):
+            action_type = str(raw_action.get("type") or "")
+            try:
+                if action_type == "create_reminder":
+                    action = CreateReminderAction.model_validate(raw_action)
+                    due_at = self._parse_iso_datetime(action.due_at_iso)
+                    if due_at is None:
+                        dropped.append({"type": action_type, "reason": "due_at_invalid"})
+                        continue
+                    reminder = await proactivity.create_reminder(
+                        user_id=user.id,
+                        text=action.text,
+                        due_at=due_at,
+                        channel=state.get("channel", "telegram"),
+                        idempotency_key=action.idempotency_key,
+                    )
+                    executed.append({"type": action_type, "id": reminder.id})
+                elif action_type == "create_open_loop":
+                    action = CreateOpenLoopAction.model_validate(raw_action)
+                    due_after = self._parse_iso_datetime(action.due_after_iso)
+                    loop = await heartbeat.create_open_loop(
+                        user_id=user.id,
+                        thread_id=thread.id,
+                        source_message_id=user_message.id,
+                        title=action.title,
+                        kind=action.kind,
+                        due_after=due_after,
+                    )
+                    executed.append({"type": action_type, "id": loop.id})
+                elif action_type == "close_open_loop":
+                    action = CloseOpenLoopAction.model_validate(raw_action)
+                    open_loop = await self.session.get(OpenLoop, action.id)
+                    if open_loop is None or open_loop.status != "open":
+                        dropped.append({"type": action_type, "reason": "open_loop_missing"})
+                        continue
+                    open_loop.status = "closed"
+                    open_loop.closed_at = utc_now()
+                    loop_thread = await self.session.get(ConversationThread, open_loop.thread_id)
+                    if loop_thread is not None and loop_thread.open_loop_count > 0:
+                        loop_thread.open_loop_count -= 1
+                    state.setdefault("memory_mutations", []).append(
+                        {
+                            "kind": "relationship",
+                            "key": f"closed_loop:{open_loop.id}",
+                            "value": {"summary": action.summary, "title": open_loop.title},
+                            "confidence": 0.7,
+                            "reason": "User confirmed completion of open loop.",
+                            "layer": "relationship",
+                        }
+                    )
+                    executed.append({"type": action_type, "id": action.id})
+            except Exception:
+                dropped.append({"type": action_type or "unknown", "reason": "execution_error"})
+
+        state["actions_taken"] = executed
+        action_types = [str(item.get("type") or "") for item in executed]
+        execution_trace = {
+            "action_count": len(executed),
+            "action_types": ",".join(action_types),
+            "action.consistency": state.get("trace_metadata", {})
+            .get("action_execution", {})
+            .get("action.consistency", "ok"),
+            "dropped": dropped,
+        }
+        state.setdefault("trace_metadata", {})["action_execution"] = execution_trace
+
+    @staticmethod
+    def _parse_iso_datetime(value: str | None):
+        from datetime import UTC, datetime
+
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     async def _handle_command(
         self,

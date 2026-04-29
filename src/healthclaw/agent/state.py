@@ -14,6 +14,9 @@ class AgentState(TypedDict, total=False):
     memories: list[dict[str, Any]]
     soul_preferences: dict[str, Any]
     memory_mutations: list[MemoryMutation]
+    memory_proposals: list[dict[str, Any]]
+    actions: list[dict[str, Any]]
+    actions_taken: list[dict[str, Any]]
     safety: dict[str, str]
     time_context: dict[str, Any]
     response: str
