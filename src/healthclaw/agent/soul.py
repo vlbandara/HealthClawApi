@@ -67,7 +67,7 @@ def system_prompt(
     user_id: str = "unknown",
     timezone: str = "unknown",
     local_time: dict[str, object] | None = None,
-    lifecycle_stage: str = "onboarding",
+    lifecycle_stage: str | None = None,
     recent_message_count: int | None = None,
     memory_documents: dict[str, str] | None = None,
     trust_level: float | None = None,
@@ -113,7 +113,7 @@ def _observable_context_block(
     user_id: str,
     timezone: str,
     local_time: dict[str, object] | None,
-    lifecycle_stage: str,
+    lifecycle_stage: str | None,
     recent_message_count: int | None,
     trust_level: float | None,
     sentiment_ema: float | None,
@@ -129,7 +129,6 @@ def _observable_context_block(
         f"- user_id: {user_id}",
         f"- timezone: {timezone}",
         f"- local_time: {local_time or {'status': 'unknown'}}",
-        f"- lifecycle_hint: {lifecycle_stage} ({_lifecycle_hint(lifecycle_stage)})",
         f"- recent_message_count: {recent_message_count if recent_message_count is not None else 'unknown'}",
         f"- trust_level: {_trust_level_line(trust_level)}",
         f"- sentiment_ema: {_format_number(sentiment_ema)}",
@@ -142,6 +141,8 @@ def _observable_context_block(
         "- open_loops:",
         *_fact_lines(open_loops, formatter=_format_open_loop),
     ]
+    if lifecycle_stage:
+        lines.insert(5, f"- lifecycle_hint: {lifecycle_stage} ({_lifecycle_hint(lifecycle_stage)})")
     return "\n".join(lines)
 
 

@@ -4,9 +4,7 @@ from datetime import UTC, datetime
 
 from pydantic import TypeAdapter, ValidationError
 
-from healthclaw.agent.continuity import build_bridges
 from healthclaw.agent.response import generate_companion_response
-from healthclaw.agent.safety import classify_safety
 from healthclaw.agent.state import AgentState
 from healthclaw.agent.time_context import TimeContext, build_time_context
 from healthclaw.core.tracing import traced_node
@@ -27,18 +25,30 @@ async def normalize_input(state: AgentState) -> AgentState:
     return state
 
 
-@traced_node("safety_and_scope")
-async def classify_scope_and_safety(state: AgentState) -> AgentState:
-    safety = classify_safety(state["user_content"])
-    state["safety"] = {
-        "category": safety.category,
-        "severity": safety.severity,
-        "action": safety.action,
+@traced_node("assemble_signals")
+async def assemble_signals(state: AgentState) -> AgentState:
+    user_message = state.get("user_message", {})
+    content_type = str(user_message.get("content_type") or "text")
+    attachments = user_message.get("attachments")
+    attachment_count = (
+        len(attachments)
+        if isinstance(attachments, list)
+        else int(bool(attachments))
+        if attachments is not None
+        else 0
+    )
+    state["observable_signals"] = {
+        "message_length": len(state["user_content"]),
+        "content_type": content_type,
+        "is_voice": content_type == "voice_transcript",
+        "attachment_count": attachment_count,
+        "has_attachments": attachment_count > 0,
+        "transcription_uncertain": bool(user_message.get("transcription_uncertain")),
     }
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
-        "nodes": [*state.get("trace_metadata", {}).get("nodes", []), "safety_and_scope"],
-        "safety_category": state["safety"]["category"],
+        "nodes": [*state.get("trace_metadata", {}).get("nodes", []), "assemble_signals"],
+        "observable_signals": state["observable_signals"],
     }
     return state
 
@@ -69,31 +79,19 @@ async def retrieve_memory(state: AgentState) -> AgentState:
 
 @traced_node("companion_response")
 async def generate_response(state: AgentState) -> AgentState:
-    safety = classify_safety(state["user_content"])
     time_ctx = TimeContext(**state["time_context"])
-
-    # Compute continuity bridges before calling the LLM
-    bridges = build_bridges(
-        time_context=time_ctx,
-        memories=state.get("memories", []),
-        open_loops=state.get("open_loops", []),
-        safety_category=safety.category,
-    )
-    state["bridges"] = bridges
 
     generation, metadata = await generate_companion_response(
         user_content=state["user_content"],
-        safety=safety,
         time_context=time_ctx,
         memories=state.get("memories", []),
         soul_preferences=state.get("soul_preferences", {}),
-        bridges=bridges,
         open_loops=state.get("open_loops", []),
         streaks=state.get("streaks", []),
         recent_messages=state.get("recent_messages", []),
         memory_documents=state.get("memory_documents", {}),
         user_context=state.get("user", {}),
-        safety_category=state.get("safety", {}).get("category"),
+        observable_signals=state.get("observable_signals", {}),
         thread_summary=state.get("thread_summary"),
         relationship_signals=state.get("relationship_signals"),
     )
@@ -110,10 +108,15 @@ async def generate_response(state: AgentState) -> AgentState:
 
 @traced_node("proactive_policy")
 async def decide_proactivity(state: AgentState) -> AgentState:
+    observable_signals = state.get("observable_signals", {})
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
-        "proactive_candidate": not state["time_context"]["quiet_hours"]
-        and state["safety"]["category"] == "wellness",
+        "proactive_candidate": not state["time_context"]["quiet_hours"],
+        "proactive_signals": {
+            "quiet_hours": state["time_context"]["quiet_hours"],
+            "message_length": observable_signals.get("message_length"),
+            "content_type": observable_signals.get("content_type"),
+        },
     }
     state["trace_metadata"]["nodes"] = [
         *state["trace_metadata"].get("nodes", []),
@@ -198,33 +201,32 @@ async def update_memory(state: AgentState) -> AgentState:
         *state.get("memory_proposals", []),
         *extracted_mutations,
     ]
-    if state["safety"]["category"] == "wellness":
-        content = state["user_content"]
-        content_type = state.get("trace_metadata", {}).get("content_type", "text")
-        is_command = state.get("user_message", {}).get("is_command", False)
-        if len(content) >= 40 and is_meaningful_exchange(
-            content, content_type=content_type, is_command=is_command
-        ):
-            prior_episode_prefix = None
-            for mem in state.get("memories", []):
-                if mem.get("kind") == "episode" and mem.get("key") == "latest_check_in":
-                    prior_summary = mem.get("value", {}).get("summary", "") or ""
-                    prior_episode_prefix = prior_summary[:200]
-                    break
-            current_prefix = content[:200]
-            if prior_episode_prefix != current_prefix:
-                state["memory_mutations"].append(
-                    {
-                        "kind": "episode",
-                        "key": "latest_check_in",
-                        "layer": "episode",
-                        "value": {"summary": content[:500]},
-                        "confidence": 0.55,
-                        "reason": "Preserve recent episode for continuity.",
-                        "visibility": "internal",
-                        "user_editable": False,
-                    }
-                )
+    content = state["user_content"]
+    content_type = state.get("trace_metadata", {}).get("content_type", "text")
+    is_command = state.get("user_message", {}).get("is_command", False)
+    if len(content) >= 40 and is_meaningful_exchange(
+        content, content_type=content_type, is_command=is_command
+    ):
+        prior_episode_prefix = None
+        for mem in state.get("memories", []):
+            if mem.get("kind") == "episode" and mem.get("key") == "latest_check_in":
+                prior_summary = mem.get("value", {}).get("summary", "") or ""
+                prior_episode_prefix = prior_summary[:200]
+                break
+        current_prefix = content[:200]
+        if prior_episode_prefix != current_prefix:
+            state["memory_mutations"].append(
+                {
+                    "kind": "episode",
+                    "key": "latest_check_in",
+                    "layer": "episode",
+                    "value": {"summary": content[:500]},
+                    "confidence": 0.55,
+                    "reason": "Preserve recent episode for continuity.",
+                    "visibility": "internal",
+                    "user_editable": False,
+                }
+            )
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
         "nodes": [*state.get("trace_metadata", {}).get("nodes", []), "memory_update"],

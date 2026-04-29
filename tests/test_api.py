@@ -274,15 +274,66 @@ async def test_shadow_mode_records_context_harness_metadata(monkeypatch) -> None
     get_settings.cache_clear()
 
 
-async def test_medical_boundary_response(client: AsyncClient) -> None:
+async def test_medical_shaped_message_still_uses_model(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    called = {"count": 0}
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        called["count"] += 1
+        return OpenRouterResult(
+            content="Model-owned medical boundary reply",
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 12},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
     response = await client.post(
         "/v1/conversations/u2/messages",
         json={"content": "I have chest pain after training, diagnose this"},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["safety_category"] == "medical_boundary"
-    assert "cannot diagnose" in body["response"].lower()
+    assert called["count"] >= 1
+    assert body["safety_category"] == "wellness"
+    assert body["response"] == "Model-owned medical boundary reply"
+    get_settings.cache_clear()
+
+
+async def test_crisis_shaped_message_still_uses_model(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    called = {"count": 0}
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        called["count"] += 1
+        return OpenRouterResult(
+            content="Model-owned crisis reply",
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 12},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+    response = await client.post(
+        "/v1/conversations/u-crisis/messages",
+        json={"content": "I don't want to be here anymore"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert called["count"] >= 1
+    assert body["safety_category"] == "wellness"
+    assert body["response"] == "Model-owned crisis reply"
+    get_settings.cache_clear()
 
 
 async def test_telegram_start_uses_natural_first_chat_copy(client: AsyncClient) -> None:

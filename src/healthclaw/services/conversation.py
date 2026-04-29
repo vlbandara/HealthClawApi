@@ -204,6 +204,7 @@ class ConversationService:
         if inbound_event is not None:
             inbound_event.user_message_id = user_message.id
         is_command = event.content.startswith("/")
+        live_safety_category = "wellness"
 
         if command_response := await self._handle_command(
             event,
@@ -310,7 +311,13 @@ class ConversationService:
                 "user": user_context,
                 "user_content": event.content,
                 "channel": event.channel,
-                "user_message": {"id": user_message.id, "is_command": is_command},
+                "user_message": {
+                    "id": user_message.id,
+                    "is_command": is_command,
+                    "content_type": event.content_type,
+                    "attachments": event.metadata.get("attachments"),
+                    "transcription_uncertain": self._transcription_uncertain(event.metadata),
+                },
                 "memories": selected_memories,
                 "soul_preferences": soul_preferences,
                 "open_loops": selected_open_loops,
@@ -344,7 +351,7 @@ class ConversationService:
             trace_id=trace_id,
             metadata_={
                 "trace_id": trace_id,
-                "safety_category": state["safety"]["category"],
+                "safety_category": live_safety_category,
                 "generation": state.get("trace_metadata", {}).get("generation", {}),
             },
         )
@@ -370,7 +377,7 @@ class ConversationService:
             advanced_streaks = await RitualStreakService(self.session).record_meaningful_exchange(
                 user,
                 user_message.created_at,
-                state["safety"]["category"],
+                live_safety_category,
             )
             streak_updates = self._streak_progress_payload(advanced_streaks)
             if streak_updates:
@@ -423,9 +430,9 @@ class ConversationService:
             SafetyEvent(
                 user_id=user.id,
                 message_id=user_message.id,
-                category=state["safety"]["category"],
-                severity=state["safety"]["severity"],
-                action=state["safety"]["action"],
+                category="model_managed",
+                severity="info",
+                action="llm_response",
             )
         )
         self.session.add(
@@ -446,11 +453,7 @@ class ConversationService:
                 state=redacted_payload(
                     {
                         "response": state["response"],
-                        "safety": {
-                            "category": state["safety"]["category"],
-                            "severity": state["safety"]["severity"],
-                            "action": state["safety"]["action"],
-                        },
+                        "safety_category": live_safety_category,
                         "time_context": state["time_context"],
                         "trace_metadata": state.get("trace_metadata", {}),
                         "memory_updates": memory_updates,
@@ -466,7 +469,7 @@ class ConversationService:
             assistant_message_id=assistant_message.id,
             thread_id=thread.id,
             response=assistant_message.content,
-            safety_category=state["safety"]["category"],
+            safety_category=live_safety_category,
             time_context=state["time_context"],
             memory_updates=memory_updates,
         ).model_dump(mode="json")
