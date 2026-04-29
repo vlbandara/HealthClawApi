@@ -23,10 +23,16 @@ class GenerationResult:
 ACTION_OUTPUT_CONTRACT = (
     "Output a single JSON object with exactly these keys: "
     '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation]}. '
-    "Allowed action types are create_reminder, create_open_loop, close_open_loop, and none. "
-    'For close_open_loop, use an "id" that exactly matches one listed under Open Loops and '
-    'an "outcome" of "completed", "dropped", or "reframed". '
-    "Only state that you set, created, or scheduled something "
+    "Allowed action types and their required fields:\n"
+    "  create_reminder: "
+    '{"type":"create_reminder","text":"<label>","due_at_iso":"<ISO 8601 with tz>"}\n'
+    "  create_open_loop: "
+    '{"type":"create_open_loop","title":"<title>","kind":"commitment"}\n'
+    "  close_open_loop: "
+    '{"type":"close_open_loop","id":"<exact id>","summary":"<one line>",'
+    '"outcome":"completed"|"dropped"|"reframed"}\n'
+    '  none: {"type":"none"}\n'
+    "Only say you set, scheduled, or created something "
     "when the matching action appears in actions. "
     "If timing/details are uncertain, ask the user instead of guessing."
 )
