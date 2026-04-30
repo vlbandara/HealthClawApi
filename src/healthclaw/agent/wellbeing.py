@@ -61,9 +61,10 @@ def build_wellbeing_input(
     candidate: dict[str, Any],
     last_active_at: datetime | None,
     proactive_paused_until: datetime | None,
-    outbound_count_24h: int,
-    last_outbound_at: datetime | None,
-    daily_cap: int,
+    proactive_enabled: bool = True,
+    outbound_count_24h: int = 0,
+    last_outbound_at: datetime | None = None,
+    daily_cap: int = 0,
     monthly_llm_tokens_used: int | None = None,
     monthly_llm_token_budget: int | None = None,
 ) -> dict[str, Any]:
@@ -79,6 +80,7 @@ def build_wellbeing_input(
         "user_profile": {
             "timezone": timezone,
             "quiet_window": {"start": quiet_start, "end": quiet_end},
+            "proactive_enabled": proactive_enabled,
             "proactive_paused_until": _iso(proactive_paused_until),
             "last_active_at": _iso(last_active_at),
             "heartbeat_profile": heartbeat_md[:1200],

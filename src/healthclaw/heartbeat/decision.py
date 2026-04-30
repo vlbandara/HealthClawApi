@@ -97,6 +97,7 @@ def build_decision_input(
         },
         last_active_at=user.last_active_at,
         proactive_paused_until=user.proactive_paused_until,
+        proactive_enabled=user.proactive_enabled,
         outbound_count_24h=outbound_count_24h,
         last_outbound_at=last_outbound_at,
         daily_cap=daily_cap,

@@ -24,7 +24,6 @@ def test_system_prompt_surfaces_observable_context_without_tone_bands() -> None:
         user_id="u-observable",
         timezone="Asia/Colombo",
         local_time={"part_of_day": "night", "quiet_hours": True},
-        lifecycle_stage="early",
         recent_message_count=12,
         trust_level=0.68,
         sentiment_ema=-0.42,
@@ -44,7 +43,7 @@ def test_system_prompt_surfaces_observable_context_without_tone_bands() -> None:
     )
 
     assert "# Observable Context" in prompt
-    assert "lifecycle_hint: early" in prompt
+    assert "lifecycle_hint" not in prompt
     assert "recent_message_count: 12" in prompt
     assert "trust_level: 0.68" in prompt
     assert "sentiment_ema: -0.42" in prompt

@@ -135,27 +135,16 @@ async def process_due_heartbeats() -> dict[str, int]:
             now = datetime.now(UTC)
             trace_id = new_trace_id()
 
-            # Hard gate first (cheap Python checks)
-            eligible, reason = await heartbeat.should_send(job, now)
-            if not eligible:
-                # Defer quiet-hours jobs (both regular blocked by quiet hours,
-                # and internal jobs awaiting quiet hours) +30 min so they retry.
-                if reason in {"quiet_hours", "awaiting_quiet_hours"}:
+            # Internal jobs (dream/consolidate): check timing gate, run directly without Telegram
+            if job.kind in {"dream", "consolidate"}:
+                eligible, reason = await heartbeat.should_send(job, now)
+                if not eligible:
                     job.due_at = now + timedelta(minutes=30)
                     await heartbeat.record_event(
                         job, "deferred", reason, trace_id=trace_id, skip_reason=reason
                     )
                     deferred += 1
-                else:
-                    job.status = "suppressed"
-                    await heartbeat.record_event(
-                        job, "suppressed", reason, trace_id=trace_id, skip_reason=reason
-                    )
-                    suppressed += 1
-                continue
-
-            # Internal job branch: dream/consolidate run directly, no Telegram
-            if job.kind in {"dream", "consolidate"}:
+                    continue
                 try:
                     if job.kind == "dream":
                         from healthclaw.memory.dream import DreamService

@@ -248,7 +248,7 @@ class MemoryKindAudit(Base):
     kind: Mapped[str] = mapped_column(String(64))
     key: Mapped[str] = mapped_column(String(128))
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

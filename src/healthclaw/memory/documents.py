@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from healthclaw.agent.soul import PROTECTED_SOUL_KEYS, sanitized_soul_preferences
+from healthclaw.agent.soul import normalize_soul_preferences
 from healthclaw.db.models import (
     Memory,
     Message,
@@ -87,8 +87,8 @@ class MarkdownMemoryService:
         )
         preferences = result.scalar_one_or_none()
         if preferences is None:
-            return sanitized_soul_preferences({})
-        return sanitized_soul_preferences(
+            return normalize_soul_preferences({})
+        return normalize_soul_preferences(
             {
                 "tone_preferences": preferences.tone_preferences,
                 "response_preferences": preferences.response_preferences,
@@ -127,9 +127,7 @@ class MarkdownMemoryService:
                     kind=kind,
                     content=content,
                     source=source,
-                    metadata_={"protected_policy_keys": sorted(PROTECTED_SOUL_KEYS)}
-                    if kind == "SOUL"
-                    else {},
+                    metadata_={},
                 )
                 self.session.add(document)
             elif document.content != content:

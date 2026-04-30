@@ -76,15 +76,6 @@ class ProactivityService:
                 model=None,
                 decision_input={"candidate": {"kind": "reminder", "channel": reminder.channel}},
             )
-        if not user.proactive_enabled:
-            return WellbeingDecision(
-                reach_out=False,
-                when="hold",
-                message_seed="",
-                rationale="proactive outreach disabled",
-                model=None,
-                decision_input={"candidate": {"kind": "reminder", "channel": reminder.channel}},
-            )
 
         time_context = build_time_context(user, now=now)
         open_loops_result = await self.session.execute(
@@ -108,6 +99,20 @@ class ProactivityService:
         relationship = build_relationship_context(engagement, now=now)
         outbound_count_24h, last_outbound_at = await self._outbound_activity(user.id, now=now)
         recent_activity = await self._recent_activity_at(user.id)
+
+        if outbound_count_24h >= user.proactive_max_per_day:
+            return WellbeingDecision(
+                reach_out=False,
+                when="hold",
+                message_seed="",
+                rationale="daily delivery cap reached",
+                model=None,
+                decision_input={
+                    "candidate": {"kind": "reminder", "channel": reminder.channel},
+                    "delivery_floor_applied": True,
+                },
+            )
+
         candidate = {
             "kind": "reminder",
             "channel": reminder.channel,
@@ -124,6 +129,7 @@ class ProactivityService:
             "user_profile": {
                 "timezone": user.timezone,
                 "quiet_window": {"start": user.quiet_start, "end": user.quiet_end},
+                "proactive_enabled": user.proactive_enabled,
                 "proactive_paused_until": _iso(user.proactive_paused_until),
                 "last_active_at": _iso(user.last_active_at),
                 "heartbeat_profile": user.heartbeat_md[:1200],
@@ -148,22 +154,12 @@ class ProactivityService:
             },
             "candidate": candidate,
         }
-        reflection = await reflect_on_wellbeing(
+        return await reflect_on_wellbeing(
             settings=self._settings,
             user_id=user.id,
             decision_input=decision_input,
             metadata={"channel": reminder.channel, "source_kind": "reminder"},
         )
-        if outbound_count_24h >= user.proactive_max_per_day:
-            return WellbeingDecision(
-                reach_out=False,
-                when="hold",
-                message_seed="",
-                rationale="daily delivery cap reached",
-                model=reflection.model,
-                decision_input={**decision_input, "delivery_floor_applied": True},
-            )
-        return reflection
 
     async def record_decision(
         self,

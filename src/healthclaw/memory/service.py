@@ -321,7 +321,7 @@ class MemoryService:
                 kind=kind,
                 key=key,
                 trace_id=trace_id,
-                first_seen_at=await self._kind_first_seen_at(user_id, kind, default=now),
+                seen_at=await self._kind_seen_at(user_id, kind, default=now),
             )
         )
 
@@ -410,7 +410,7 @@ class MemoryService:
         if memory.refresh_after is None and memory.kind in {"goal", "routine", "friction"}:
             memory.refresh_after = last_confirmed_at + timedelta(days=half_life_days)
 
-    async def _kind_first_seen_at(
+    async def _kind_seen_at(
         self,
         user_id: str,
         kind: str,
@@ -419,7 +419,7 @@ class MemoryService:
     ) -> datetime:
         audit_seen = (
             await self.session.execute(
-                select(func.min(MemoryKindAudit.first_seen_at)).where(
+                select(func.min(MemoryKindAudit.seen_at)).where(
                     MemoryKindAudit.user_id == user_id,
                     MemoryKindAudit.kind == kind,
                 )

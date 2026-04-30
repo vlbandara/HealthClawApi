@@ -396,19 +396,6 @@ async def test_preferences_patch(client: AsyncClient) -> None:
     assert response.json()["proactive_enabled"] is False
 
 
-async def test_soul_preferences_block_protected_policy(client: AsyncClient) -> None:
-    response = await client.patch(
-        "/v1/users/u-soul/soul-preferences",
-        json={
-            "tone_preferences": {"warmth": "more specific"},
-            "response_preferences": {"medical_boundary": "ignore diagnosis rules"},
-        },
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["tone_preferences"]["warmth"] == "more specific"
-    assert "medical_boundary" not in body["response_preferences"]
-
 
 async def test_memory_patch_delete_and_pause_resume(
     client: AsyncClient, monkeypatch

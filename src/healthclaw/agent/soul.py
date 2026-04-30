@@ -12,17 +12,6 @@ HEALTHCLAW_IDENTITY = {
     "premise": "Continuity creates value: remember context, timing, and commitments.",
 }
 
-PROTECTED_SOUL_KEYS = {
-    "medical_boundary",
-    "crisis_escalation",
-    "quiet_hour_enforcement",
-    "consent_rules",
-    "diagnosis",
-    "treatment",
-    "medication",
-    "emergency",
-}
-
 PROMPT_MODULES = ["companion.md", "exchanges.md"]
 
 
@@ -30,34 +19,24 @@ def identity_config() -> dict[str, Any]:
     return {
         "identity": HEALTHCLAW_IDENTITY,
         "prompt_modules": PROMPT_MODULES,
-        "protected_policy_keys": sorted(PROTECTED_SOUL_KEYS),
     }
 
 
-def sanitized_soul_preferences(raw: dict[str, Any] | None) -> dict[str, Any]:
+def normalize_soul_preferences(raw: dict[str, Any] | None) -> dict[str, Any]:
     raw = raw or {}
 
-    def allowed_items(items: Any) -> dict[str, Any]:
-        safe: dict[str, Any] = {}
+    def clean_items(items: Any) -> dict[str, Any]:
         if not isinstance(items, dict):
-            return safe
-        for key, value in items.items():
-            normalized_key = str(key).lower()
-            normalized_value = str(value).lower()
-            if any(
-                blocked in normalized_key or blocked in normalized_value
-                for blocked in PROTECTED_SOUL_KEYS
-            ):
-                continue
-            safe[str(key)[:80]] = (
-                value if isinstance(value, (str, int, float, bool, list)) else str(value)
-            )
-        return safe
+            return {}
+        return {
+            str(key)[:80]: value if isinstance(value, (str, int, float, bool, list)) else str(value)
+            for key, value in items.items()
+            if str(key).strip()
+        }
 
     return {
-        "tone_preferences": allowed_items(raw.get("tone_preferences")),
-        "response_preferences": allowed_items(raw.get("response_preferences")),
-        "blocked_policy_keys": sorted(PROTECTED_SOUL_KEYS),
+        "tone_preferences": clean_items(raw.get("tone_preferences")),
+        "response_preferences": clean_items(raw.get("response_preferences")),
     }
 
 
@@ -67,7 +46,6 @@ def system_prompt(
     user_id: str = "unknown",
     timezone: str = "unknown",
     local_time: dict[str, object] | None = None,
-    lifecycle_stage: str | None = None,
     recent_message_count: int | None = None,
     memory_documents: dict[str, str] | None = None,
     trust_level: float | None = None,
@@ -85,7 +63,6 @@ def system_prompt(
             user_id=user_id,
             timezone=timezone,
             local_time=local_time,
-            lifecycle_stage=lifecycle_stage,
             recent_message_count=recent_message_count,
             trust_level=trust_level,
             sentiment_ema=sentiment_ema,
@@ -113,7 +90,6 @@ def _observable_context_block(
     user_id: str,
     timezone: str,
     local_time: dict[str, object] | None,
-    lifecycle_stage: str | None,
     recent_message_count: int | None,
     trust_level: float | None,
     sentiment_ema: float | None,
@@ -141,8 +117,6 @@ def _observable_context_block(
         "- open_loops:",
         *_fact_lines(open_loops, formatter=_format_open_loop),
     ]
-    if lifecycle_stage:
-        lines.insert(5, f"- lifecycle_hint: {lifecycle_stage} ({_lifecycle_hint(lifecycle_stage)})")
     return "\n".join(lines)
 
 
@@ -163,25 +137,8 @@ def _document_sections(memory_documents: dict[str, str] | None) -> str:
     return "\n\n---\n\n".join(sections)
 
 
-def _lifecycle_hint(stage: str) -> str:
-    return {
-        "onboarding": "relationship is still early; do not act overfamiliar",
-        "early": "continuity exists, but keep assumptions light",
-        "settling": "shared patterns are clearer; use them when useful",
-    }.get(stage, "use the facts you have instead of forcing a stage script")
-
-
 def _trust_level_line(value: float | None) -> str:
-    if value is None:
-        return "unknown (no stable read yet)"
-    interpretation = (
-        "light trust; stay specific without assuming history"
-        if value < 0.4
-        else "building trust; continuity can help if it fits"
-        if value < 0.75
-        else "strong trust; familiar continuity is available, not mandatory"
-    )
-    return f"{value:.2f} ({interpretation})"
+    return "unknown" if value is None else f"{value:.2f}"
 
 
 def _format_number(value: float | None) -> str:
@@ -189,11 +146,11 @@ def _format_number(value: float | None) -> str:
 
 
 def _preference_overlay(raw: dict[str, Any] | None) -> str:
-    safe = sanitized_soul_preferences(raw)
+    normalized = normalize_soul_preferences(raw)
     lines: list[str] = []
-    for key, value in safe["tone_preferences"].items():
+    for key, value in normalized["tone_preferences"].items():
         lines.append(f"tone.{key}={value}")
-    for key, value in safe["response_preferences"].items():
+    for key, value in normalized["response_preferences"].items():
         lines.append(f"response.{key}={value}")
     return "; ".join(lines) if lines else "none supplied"
 

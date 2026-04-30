@@ -210,17 +210,12 @@ class HeartbeatService:
         user = await self.session.get(User, job.user_id)
         if user is None:
             return False, "user_not_found"
-        if not user.proactive_enabled:
-            return False, "proactive_disabled"
 
-        time_context = build_time_context(user, now=now)
-
-        # Internal jobs (dream/consolidate) only run DURING quiet hours —
-        # invert the gate and skip cooldown/quota checks entirely.
+        # Internal jobs (dream/consolidate) only run DURING quiet hours.
         if job.kind in {"dream", "consolidate"}:
+            time_context = build_time_context(user, now=now)
             if not time_context.quiet_hours:
                 return False, "awaiting_quiet_hours"
-            return True, "eligible"
         return True, "eligible"
 
     async def should_send_soft(
@@ -233,6 +228,22 @@ class HeartbeatService:
         from healthclaw.heartbeat.decision import decide
 
         time_context = build_time_context(user, now=now)
+        engagement = await self._engagement_state(user.id)
+        relationship = build_relationship_context(engagement, now=now)
+        outbound_count_24h, last_outbound_at = await self._outbound_activity(user.id, now=now)
+
+        if outbound_count_24h >= user.proactive_max_per_day:
+            return WellbeingDecision(
+                reach_out=False,
+                when="hold",
+                message_seed="",
+                rationale="daily delivery cap reached",
+                model=None,
+                decision_input={
+                    "candidate": {"kind": job.kind, "channel": job.channel},
+                    "delivery_floor_applied": True,
+                },
+            )
 
         open_loops_result = await self.session.execute(
             select(OpenLoop).where(
@@ -242,7 +253,6 @@ class HeartbeatService:
         )
         open_loops = list(open_loops_result.scalars())
 
-        # Load last 3 exchange pairs for context
         msgs_result = await self.session.execute(
             select(Message)
             .where(
@@ -258,10 +268,6 @@ class HeartbeatService:
             for m in recent_msgs
         ]
 
-        engagement = await self._engagement_state(user.id)
-        relationship = build_relationship_context(engagement, now=now)
-        outbound_count_24h, last_outbound_at = await self._outbound_activity(user.id, now=now)
-
         result = await decide(
             job=job,
             user=user,
@@ -274,18 +280,6 @@ class HeartbeatService:
             last_outbound_at=last_outbound_at,
             daily_cap=user.proactive_max_per_day,
         )
-        if outbound_count_24h >= user.proactive_max_per_day:
-            return WellbeingDecision(
-                reach_out=False,
-                when="hold",
-                message_seed="",
-                rationale="daily delivery cap reached",
-                model=result.model or None,
-                decision_input={
-                    **result.decision_input,
-                    "delivery_floor_applied": True,
-                },
-            )
         return WellbeingDecision(
             reach_out=result.decision == "run",
             when=result.when,

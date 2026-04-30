@@ -92,7 +92,7 @@ async def test_policy_memory_writes_directly_and_records_kind_audit() -> None:
     assert stored.key == "medical_boundary"
     assert len(audits) == 1
     assert audits[0].trace_id == "trace-policy"
-    assert audits[0].first_seen_at <= audits[0].created_at
+    assert audits[0].seen_at <= audits[0].created_at
 
 
 async def test_upsert_reactivates_deleted_memory_and_keeps_source_history() -> None:

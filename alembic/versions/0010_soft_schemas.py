@@ -32,7 +32,7 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(length=64), nullable=False),
         sa.Column("key", sa.String(length=128), nullable=False),
         sa.Column("trace_id", sa.String(length=64), nullable=True),
-        sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("seen_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
