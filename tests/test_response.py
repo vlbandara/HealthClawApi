@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from healthclaw.agent.response import generate_companion_response
-from healthclaw.agent.safety import SafetyDecision
 from healthclaw.core.config import get_settings
 from healthclaw.integrations.openrouter import OpenRouterResult
 from tests.factories import make_time_context
@@ -29,7 +28,6 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
 
     generation, metadata = await generate_companion_response(
         user_content="I am trying to restart the routine.",
-        safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
         memories=[],
         recent_messages=[],
@@ -43,21 +41,31 @@ async def test_generate_companion_response_injects_relationship_signals(monkeypa
             "reply_latency_seconds_ema": 50_000.0,
             "last_meaningful_exchange_at": datetime(2026, 4, 21, 1, 0, tzinfo=UTC),
         },
+        observable_signals={"message_length": 36, "content_type": "text"},
     )
 
-    prompt = captured_messages[-1]["content"]
+    system_content = str(captured_messages[0]["content"])
+    prompt = str(captured_messages[-1]["content"])
     assert generation.message == "Relationship-aware reply"
     assert metadata["provider"] == "openrouter"
     assert isinstance(metadata.get("streaks_surfaced"), bool)
-    assert "<relationship_signals>" in prompt
-    assert "lower-pressure phrasing" in prompt
-    assert "spoken-style phrasing" in prompt
-    assert "slow re-entry or delayed replies as failure" in prompt
-    assert "continuity references are safe" in prompt
+    assert "# Observable Context" in system_content
+    assert "trust_level: 0.30" in system_content
+    assert "sentiment_ema: -0.6" in system_content
+    assert "voice_text_ratio: 0.8" in system_content
+    assert "reply_latency_seconds_ema: 50000.0" in system_content
+    assert "<observable_signals>" in prompt
+    assert "sentiment_ema=-0.6" in prompt
+    assert "voice_text_ratio=0.8" in prompt
+    assert "reply_latency_hours=13.89" in prompt
+    assert "last_meaningful_exchange_hours_ago=1.5" in prompt
+    assert "message_length=36" in prompt
     get_settings.cache_clear()
 
 
-async def test_generate_companion_response_surfaces_streak_block_when_gated(monkeypatch) -> None:
+async def test_generate_companion_response_surfaces_streak_facts_in_observable_context(
+    monkeypatch,
+) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     captured_messages: list[dict[str, object]] = []
@@ -77,7 +85,6 @@ async def test_generate_companion_response_surfaces_streak_block_when_gated(monk
 
     generation, metadata = await generate_companion_response(
         user_content="Quick check-in.",
-        safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
         memories=[],
         recent_messages=[],
@@ -90,15 +97,15 @@ async def test_generate_companion_response_surfaces_streak_block_when_gated(monk
             }
         ],
         user_context={"id": "u-streak-prompt", "timezone": "UTC", "trust_level": 0.9},
-        safety_category="wellness",
     )
 
     system_prompt = captured_messages[0]["content"]
     assert generation.message == "Streak-aware reply"
     assert metadata["streaks_surfaced"] is True
-    assert "# Active rituals" in system_prompt
+    assert "# Observable Context" in system_prompt
     assert "morning_check_in" in system_prompt
-    assert "7-day streak" in system_prompt
+    assert "count=7" in system_prompt
+    assert "# Active rituals" not in system_prompt
     get_settings.cache_clear()
 
 
@@ -122,7 +129,6 @@ async def test_generate_companion_response_includes_conversation_digest(monkeypa
 
     generation, metadata = await generate_companion_response(
         user_content="Keep going.",
-        safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
         memories=[],
         recent_messages=[{"role": "user", "content": "Latest short turn."}],
@@ -158,7 +164,6 @@ async def test_generate_companion_response_includes_open_loop_ids(monkeypatch) -
 
     generation, _metadata = await generate_companion_response(
         user_content="I actually finished that.",
-        safety=SafetyDecision(category="wellness", severity="low", action="support"),
         time_context=make_time_context(),
         memories=[],
         open_loops=[

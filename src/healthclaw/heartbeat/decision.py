@@ -1,30 +1,12 @@
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from healthclaw.agent.time_context import TimeContext
+from healthclaw.agent.wellbeing import build_wellbeing_input, reflect_on_wellbeing
 from healthclaw.core.config import Settings
 from healthclaw.db.models import HeartbeatJob, OpenLoop, User
-
-logger = logging.getLogger(__name__)
-
-DECISION_SYSTEM_PROMPT = """\
-You are the autonomous wake gate for a private health companion.
-A proactive message is being considered. Decide: should the companion reach out right now?
-
-Return ONLY valid JSON with exactly these fields:
-  "decision": "run" or "skip"
-  "action": a single sentence describing what to say (or null if skip)
-  "reason": 8-20 words explaining your decision
-
-Rules:
-- Prefer skip unless a heartbeat intent or open loop genuinely motivates outreach NOW.
-- If quiet_hours is true, always return skip.
-- If the user has been silent for less than 6 hours, prefer skip unless a ritual is due.
-- If there are no open loops and no heartbeat intents, return skip.
-- Keep the action message warm, grounded, and specific to the context."""
 
 
 @dataclass
@@ -34,6 +16,7 @@ class DecisionResult:
     reason: str
     model: str
     decision_input: dict
+    when: str
 
 
 async def decide(
@@ -44,10 +27,11 @@ async def decide(
     recent_exchanges: list[dict],
     settings: Settings,
     relationship: dict | None = None,
+    *,
+    outbound_count_24h: int = 0,
+    last_outbound_at: datetime | None = None,
+    daily_cap: int = 0,
 ) -> DecisionResult:
-    """LLM soft gate: returns (run, action) or (skip, None). Never raises."""
-    from healthclaw.integrations.openrouter import OpenRouterClient
-
     decision_input = build_decision_input(
         job,
         user,
@@ -55,98 +39,24 @@ async def decide(
         open_loops,
         recent_exchanges,
         relationship=relationship,
+        outbound_count_24h=outbound_count_24h,
+        last_outbound_at=last_outbound_at,
+        daily_cap=daily_cap,
     )
-
-    # Python short-circuit: skip LLM if there's clearly nothing to do
-    if time_context.quiet_hours:
-        return DecisionResult(
-            decision="skip",
-            action=None,
-            reason="quiet hours active",
-            model="",
-            decision_input=decision_input,
-        )
-
-    has_open_loops = bool(open_loops)
-    has_heartbeat_intents = bool(user.heartbeat_md.strip())
-    # Job kinds that carry their own specific trigger (payload has the context)
-    is_specific_trigger = job.kind in {"ritual", "open_loop_followup", "memory_refresh"}
-    recent_gap = time_context.interaction_gap_days or 0
-
-    if (
-        not has_open_loops
-        and not has_heartbeat_intents
-        and not is_specific_trigger
-        and recent_gap < 1
-    ):
-        return DecisionResult(
-            decision="skip",
-            action=None,
-            reason="no triggers and user active recently",
-            model="",
-            decision_input=decision_input,
-        )
-
-    # Build context for the LLM
-    user_prompt = (
-        f"<time_context>{json.dumps(decision_input['time_context'])}</time_context>\n"
-        f"<heartbeat_md>{decision_input['heartbeat_md']}</heartbeat_md>\n"
-        f"<relationship>{json.dumps(decision_input['relationship'], default=str)}</relationship>\n"
-        f"<open_loops>{json.dumps(decision_input['open_loops'])}</open_loops>\n"
-        f"<recent_exchanges>{json.dumps(decision_input['recent_exchanges'])}</recent_exchanges>\n"
-        f"<candidate_trigger>{json.dumps(decision_input['candidate_trigger'])}</candidate_trigger>"
+    reflection = await reflect_on_wellbeing(
+        settings=settings,
+        user_id=user.id,
+        decision_input=decision_input,
+        metadata={"job_kind": job.kind, "channel": job.channel},
     )
-
-    client = OpenRouterClient(settings)
-    if not client.enabled:
-        # LLM unavailable — trust the hard gate that already ran; default to run
-        return DecisionResult(
-            decision="run",
-            action=None,
-            reason="llm_unavailable_hard_gate_passed",
-            model="",
-            decision_input=decision_input,
-        )
-
-    try:
-        result = await client.chat_completion(
-            messages=[
-                {"role": "system", "content": DECISION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=200,
-            temperature=0.0,
-            model=settings.openrouter_decision_model,
-            metadata={
-                "model_role": "decision",
-                "user_id": user.id,
-                "job_kind": job.kind,
-            },
-        )
-        raw = result.content.strip()
-        # Strip markdown fences
-        if raw.startswith("```"):
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
-        parsed = json.loads(raw)
-        return DecisionResult(
-            decision=parsed.get("decision", "skip"),
-            action=parsed.get("action"),
-            reason=str(parsed.get("reason", ""))[:128],
-            model=result.model,
-            decision_input=decision_input,
-        )
-    except Exception as exc:
-        logger.warning("Decision gate failed for job %s: %s", job.id, exc)
-        return DecisionResult(
-            decision="skip",
-            action=None,
-            reason="decision_error",
-            model="",
-            decision_input=decision_input,
-        )
+    return DecisionResult(
+        decision="run" if reflection.reach_out and reflection.when == "now" else "skip",
+        action=reflection.message_seed or None,
+        reason=reflection.rationale,
+        model=reflection.model or "",
+        decision_input=decision_input,
+        when=reflection.when,
+    )
 
 
 def build_decision_input(
@@ -157,50 +67,43 @@ def build_decision_input(
     recent_exchanges: list[dict],
     *,
     relationship: dict | None = None,
+    outbound_count_24h: int = 0,
+    last_outbound_at: datetime | None = None,
+    daily_cap: int = 0,
 ) -> dict:
-    relationship_payload = dict(
-        relationship
-        or {
-            "sentiment_ema": 0.0,
-            "voice_text_ratio": 0.0,
-            "reply_latency_seconds_ema": None,
-            "last_meaningful_exchange_at": None,
-            "bands": {
-                "low_pressure": False,
-                "voice_heavy": False,
-                "slow_reentry": False,
-                "continuity_fresh": False,
-            },
-        }
-    )
-    last_meaningful_exchange_at = relationship_payload.get("last_meaningful_exchange_at")
-    if hasattr(last_meaningful_exchange_at, "isoformat"):
-        relationship_payload["last_meaningful_exchange_at"] = (
-            last_meaningful_exchange_at.isoformat()
-        )
-    return {
-        "time_context": {
-            "part_of_day": time_context.part_of_day,
-            "quiet_hours": time_context.quiet_hours,
-            "interaction_gap_days": time_context.interaction_gap_days,
-            "long_lapse": time_context.long_lapse,
-        },
-        "heartbeat_md": user.heartbeat_md[:800],
-        "relationship": relationship_payload,
-        "open_loops": [
+    return build_wellbeing_input(
+        user_id=user.id,
+        source_kind="heartbeat_job",
+        timezone=user.timezone,
+        quiet_start=user.quiet_start,
+        quiet_end=user.quiet_end,
+        time_context=time_context.to_dict(),
+        heartbeat_md=user.heartbeat_md,
+        relationship=relationship,
+        open_loops=[
             {
+                "id": loop.id,
                 "title": loop.title,
                 "kind": loop.kind,
                 "age_hours": _age_hours(loop),
             }
             for loop in open_loops[:5]
         ],
-        "recent_exchanges": recent_exchanges[-3:],
-        "candidate_trigger": {
+        recent_exchanges=recent_exchanges[-3:],
+        candidate={
             "kind": job.kind,
+            "channel": job.channel,
             "details": job.payload,
         },
-    }
+        last_active_at=user.last_active_at,
+        proactive_paused_until=user.proactive_paused_until,
+        proactive_enabled=user.proactive_enabled,
+        outbound_count_24h=outbound_count_24h,
+        last_outbound_at=last_outbound_at,
+        daily_cap=daily_cap,
+        monthly_llm_tokens_used=user.monthly_llm_tokens_used,
+        monthly_llm_token_budget=user.monthly_llm_token_budget,
+    )
 
 
 def _age_hours(loop: OpenLoop) -> float:

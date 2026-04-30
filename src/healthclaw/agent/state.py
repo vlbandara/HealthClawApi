@@ -13,17 +13,16 @@ class AgentState(TypedDict, total=False):
     assistant_message: dict[str, Any]
     memories: list[dict[str, Any]]
     soul_preferences: dict[str, Any]
+    observable_signals: dict[str, Any]
     memory_mutations: list[MemoryMutation]
     memory_proposals: list[dict[str, Any]]
     actions: list[dict[str, Any]]
     actions_taken: list[dict[str, Any]]
-    safety: dict[str, str]
     time_context: dict[str, Any]
     response: str
     trace_metadata: dict[str, Any]
     open_loops: list[dict[str, Any]]
     streaks: list[dict[str, Any]]
-    bridges: list[str]
     recent_messages: list[dict[str, Any]]
     memory_documents: dict[str, str]
     thread_summary: str

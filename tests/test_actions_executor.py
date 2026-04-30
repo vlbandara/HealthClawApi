@@ -12,6 +12,7 @@ from healthclaw.db.models import (
     HeartbeatJob,
     Memory,
     OpenLoop,
+    ProposedAction,
     Reminder,
     User,
 )
@@ -494,4 +495,57 @@ async def test_action_executor_supports_reframed_close_and_replacement_loop(
     assert loops[1].status == "open"
     assert loops[1].title == "walk for 10 minutes tonight"
     assert old_job.status == "suppressed"
+    get_settings.cache_clear()
+
+
+async def test_action_executor_persists_unknown_action_and_surfaces_soft_feedback(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=(
+                '{"message":"I have a thought for later.",'
+                '"actions":[{"type":"schedule_evening_reflection",'
+                '"payload":{"time":"20:00","channel":"telegram"},'
+                '"rationale":"fits the user\\u2019s stated evening rhythm"}],'
+                '"memory_proposals":[]}'
+            ),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 19},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+    response = await client.post(
+        "/v1/conversations/u-unknown-action/messages",
+        json={"content": "Could you set up a nightly reflection thing for me?"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert "don't have that capability yet" in body["response"]
+
+    async with SessionLocal() as session:
+        proposed = (
+            await session.execute(
+                select(ProposedAction).where(
+                    ProposedAction.user_id == "u-unknown-action",
+                    ProposedAction.type == "schedule_evening_reflection",
+                )
+            )
+        ).scalar_one()
+        checkpoint = (
+            await session.execute(
+                select(AgentCheckpoint).where(AgentCheckpoint.trace_id == body["trace_id"])
+            )
+        ).scalar_one()
+
+    assert proposed.status == "unknown_type"
+    assert proposed.payload["time"] == "20:00"
+    proposed_trace = checkpoint.state["trace_metadata"]["action_execution"]["proposed"]
+    assert proposed_trace[0]["type"] == "schedule_evening_reflection"
     get_settings.cache_clear()

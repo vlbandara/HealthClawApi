@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from healthclaw.agent.soul import PROTECTED_SOUL_KEYS, sanitized_soul_preferences
 from healthclaw.core.config import Settings
 from healthclaw.core.tracing import start_span
 from healthclaw.db.models import (
@@ -36,14 +35,13 @@ small source-of-truth updates that make the companion more continuous and less g
 
 Return ONLY valid JSON with a top-level "changes" array. Each change must be one of:
 {"target_type":"soul_preferences","target_key":"style","value":{"tone_preferences":{},"response_preferences":{}},"reason":"...","confidence":0.0-1.0}
-{"target_type":"memory","target_key":"kind:key","value":{"kind":"preference|profile|goal|routine|friction|relationship|episode","key":"snake_case","value":{"text":"..."},"confidence":0.0-1.0,"reason":"..."},"reason":"...","confidence":0.0-1.0}
+{"target_type":"memory","target_key":"kind:key","value":{"kind":"<kind>","key":"snake_case","value":{"text":"..."},"confidence":0.0-1.0,"reason":"..."},"reason":"...","confidence":0.0-1.0}
 {"target_type":"heartbeat_md","target_key":"standing_intents",
   "value":{"text":"wake: ...\nallow_long_silence: true|false\n(optional standing prose)"},
   "reason":"...","confidence":0.0-1.0}
 {"target_type":"engagement","target_key":"trust_level","value":{"trust_level":0.0-1.0},"reason":"...","confidence":0.0-1.0}
 
-Never edit safety, medical, crisis, consent, quiet-hour, diagnosis, treatment, medication, or
-emergency policy. Prefer no change unless evidence is clear."""
+Prefer no change unless evidence is clear."""
 
 
 class DreamService:
@@ -170,22 +168,21 @@ class DreamService:
         value = raw.get("value") if isinstance(raw.get("value"), dict) else {}
         reason = str(raw.get("reason") or "Dream update.")[:2000]
         confidence = _clamp_float(raw.get("confidence"), default=0.5)
-        blocked = self._protected_policy_check(target_key, value)
+        audit = self._change_audit(target_type, target_key, value)
         previous: dict[str, Any] | None = None
         applied = False
 
-        if not blocked["blocked"]:
-            try:
-                if target_type == "soul_preferences":
-                    previous, applied = await self._apply_soul_preferences(user.id, value)
-                elif target_type == "memory":
-                    previous, applied = await self._apply_memory(user.id, value, reason, confidence)
-                elif target_type == "heartbeat_md":
-                    previous, applied = await self._apply_heartbeat_md(user, value)
-                elif target_type == "engagement":
-                    previous, applied = await self._apply_engagement(user.id, value)
-            except Exception as exc:
-                blocked = {"blocked": True, "matches": [], "error": str(exc)[:500]}
+        try:
+            if target_type == "soul_preferences":
+                previous, applied = await self._apply_soul_preferences(user.id, value)
+            elif target_type == "memory":
+                previous, applied = await self._apply_memory(user.id, value, reason, confidence)
+            elif target_type == "heartbeat_md":
+                previous, applied = await self._apply_heartbeat_md(user, value)
+            elif target_type == "engagement":
+                previous, applied = await self._apply_engagement(user.id, value)
+        except Exception as exc:
+            audit = {**audit, "error": str(exc)[:500]}
 
         self.session.add(
             DreamChange(
@@ -197,7 +194,7 @@ class DreamService:
                 new_value=value,
                 reason=reason,
                 confidence=confidence,
-                protected_policy_check=blocked,
+                protected_policy_check=audit,
                 applied=applied,
             )
         )
@@ -208,8 +205,9 @@ class DreamService:
         user_id: str,
         value: dict[str, Any],
     ) -> tuple[dict[str, Any] | None, bool]:
-        safe = sanitized_soul_preferences(value)
-        if not safe["tone_preferences"] and not safe["response_preferences"]:
+        tone_preferences = _normalized_preferences(value.get("tone_preferences"))
+        response_preferences = _normalized_preferences(value.get("response_preferences"))
+        if not tone_preferences and not response_preferences:
             return None, False
         result = await self.session.execute(
             select(UserSoulPreference).where(UserSoulPreference.user_id == user_id)
@@ -220,9 +218,9 @@ class DreamService:
             preferences = UserSoulPreference(
                 user_id=user_id,
                 version=1,
-                tone_preferences=safe["tone_preferences"],
-                response_preferences=safe["response_preferences"],
-                blocked_policy_keys=safe["blocked_policy_keys"],
+                tone_preferences=tone_preferences,
+                response_preferences=response_preferences,
+                blocked_policy_keys=[],
             )
             self.session.add(preferences)
         else:
@@ -233,13 +231,13 @@ class DreamService:
             preferences.version += 1
             preferences.tone_preferences = {
                 **preferences.tone_preferences,
-                **safe["tone_preferences"],
+                **tone_preferences,
             }
             preferences.response_preferences = {
                 **preferences.response_preferences,
-                **safe["response_preferences"],
+                **response_preferences,
             }
-            preferences.blocked_policy_keys = safe["blocked_policy_keys"]
+            preferences.blocked_policy_keys = []
         return previous, True
 
     async def _apply_memory(
@@ -334,13 +332,32 @@ class DreamService:
         return cursor
 
     @staticmethod
-    def _protected_policy_check(target_key: str, value: dict[str, Any]) -> dict[str, Any]:
-        haystack = f"{target_key} {json.dumps(value, sort_keys=True)}".lower()
-        matches = sorted(key for key in PROTECTED_SOUL_KEYS if key in haystack)
-        return {"blocked": bool(matches), "matches": matches}
+    def _change_audit(target_type: str, target_key: str, value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "blocked": False,
+            "audit_only": True,
+            "target_type": target_type,
+            "target_key": target_key,
+            "value_keys": sorted(str(key) for key in value.keys())[:12],
+        }
 
 
 def _clamp_float(value: Any, *, default: float) -> float:
     if not isinstance(value, int | float):
         return default
     return max(0.0, min(1.0, float(value)))
+
+
+def _normalized_preferences(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, raw_value in value.items():
+        normalized_key = str(key).strip()[:80]
+        if not normalized_key:
+            continue
+        if isinstance(raw_value, (str, int, float, bool, list, dict)):
+            normalized[normalized_key] = raw_value
+        else:
+            normalized[normalized_key] = str(raw_value)
+    return normalized

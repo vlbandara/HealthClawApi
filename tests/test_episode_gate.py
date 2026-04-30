@@ -11,7 +11,6 @@ from healthclaw.integrations.openrouter import OpenRouterResult
 
 def _make_state(
     user_content: str,
-    safety_category: str = "wellness",
     memories: list[dict] | None = None,
     content_type: str = "text",
     is_command: bool = False,
@@ -20,10 +19,10 @@ def _make_state(
         "user": {"id": "u-episode-test", "timezone": "UTC"},
         "user_content": user_content,
         "channel": "telegram",
-        "user_message": {"role": "user", "is_command": is_command},
-        "safety": {"category": safety_category, "severity": "low", "action": "support"},
+        "user_message": {"role": "user", "is_command": is_command, "content_type": content_type},
         "memories": memories or [],
         "soul_preferences": {},
+        "observable_signals": {"message_length": len(user_content), "content_type": content_type},
         "memory_mutations": [],
         "time_context": {
             "local_datetime": "2026-04-28T10:00:00+05:30",
@@ -41,7 +40,6 @@ def _make_state(
         },
         "open_loops": [],
         "streaks": [],
-        "bridges": [],
         "recent_messages": [],
         "memory_documents": {},
         "thread_summary": "",
@@ -165,24 +163,6 @@ async def test_command_does_not_create_episode():
         state = _make_state(
             "feeling stressed about work today, can't focus on anything",
             is_command=True,
-        )
-        result = await update_memory(state)
-        episode_mutations = [
-            m for m in result["memory_mutations"]
-            if m.get("kind") == "episode" and m.get("key") == "latest_check_in"
-        ]
-        assert len(episode_mutations) == 0
-
-
-@pytest.mark.asyncio
-async def test_non_wellness_category_does_not_create_episode():
-    with patch(
-        "healthclaw.memory.extractors.OpenRouterClient.chat_completion",
-        _mocked_chat_completion,
-    ):
-        state = _make_state(
-            "feeling stressed about work today, can't focus on anything",
-            safety_category="medical",
         )
         result = await update_memory(state)
         episode_mutations = [

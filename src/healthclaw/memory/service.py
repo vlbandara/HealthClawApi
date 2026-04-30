@@ -4,22 +4,15 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.core.tracing import start_span
-from healthclaw.db.models import Memory, MemoryRevision, PolicyProposal
+from healthclaw.db.models import Memory, MemoryKindAudit, MemoryRevision
 from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.schemas.memory import MemoryMutation
 
 logger = logging.getLogger(__name__)
-
-HIGH_IMPACT_POLICY_KEYS = {
-    "medical_boundary",
-    "crisis_escalation",
-    "quiet_hour_enforcement",
-    "consent_rules",
-}
 
 
 class MemoryService:
@@ -252,28 +245,13 @@ class MemoryService:
         source_message_ids: list[str],
         trace_id: str | None = None,
     ) -> tuple[Memory, bool]:
-        if mutation.kind == "policy" and mutation.key in HIGH_IMPACT_POLICY_KEYS:
-            self.session.add(
-                PolicyProposal(
-                    user_id=user_id,
-                    key=mutation.key,
-                    proposed_value=mutation.value,
-                    reason=mutation.reason,
-                    status="pending",
-                    trace_id=trace_id,
-                )
-            )
-            await self.session.flush()
-            shadow_memory, shadow_is_new = await self._policy_proposal_shadow_memory(
-                user_id, mutation
-            )
-            return shadow_memory, shadow_is_new
-
+        kind = mutation.kind[:64]
+        key = mutation.key[:128]
         result = await self.session.execute(
             select(Memory).where(
                 Memory.user_id == user_id,
-                Memory.kind == mutation.kind,
-                Memory.key == mutation.key,
+                Memory.kind == kind,
+                Memory.key == key,
             )
         )
         memory = result.scalar_one_or_none()
@@ -284,8 +262,8 @@ class MemoryService:
         if memory is None:
             memory = Memory(
                 user_id=user_id,
-                kind=mutation.kind,
-                key=mutation.key,
+                kind=kind,
+                key=key,
                 layer=mutation.layer,
                 value=mutation.value,
                 semantic_text=semantic_text,
@@ -337,6 +315,15 @@ class MemoryService:
                 trace_id=trace_id,
             )
         )
+        self.session.add(
+            MemoryKindAudit(
+                user_id=user_id,
+                kind=kind,
+                key=key,
+                trace_id=trace_id,
+                seen_at=await self._kind_seen_at(user_id, kind, default=now),
+            )
+        )
 
         # Inline embedding — runs after flush so memory.id is available
         await self._try_embed_memory(memory)
@@ -363,43 +350,6 @@ class MemoryService:
                 memory.has_embedding = True
         except Exception as exc:
             logger.warning("Embedding failed for memory %s: %s", memory.id, exc)
-
-    async def _policy_proposal_shadow_memory(
-        self,
-        user_id: str,
-        mutation: MemoryMutation,
-    ) -> tuple[Memory, bool]:
-        result = await self.session.execute(
-            select(Memory).where(
-                Memory.user_id == user_id,
-                Memory.kind == "policy",
-                Memory.key == "pending_policy_proposal",
-            )
-        )
-        memory = result.scalar_one_or_none()
-        is_new = memory is None
-        value: dict[str, Any] = {
-            "key": mutation.key,
-            "status": "pending_approval",
-            "reason": mutation.reason,
-        }
-        if memory is None:
-            memory = Memory(
-                user_id=user_id,
-                kind="policy",
-                key="pending_policy_proposal",
-                value=value,
-                semantic_text=self._semantic_text(value),
-                confidence=mutation.confidence,
-                source_message_ids=[],
-                visibility="internal",
-                user_editable=False,
-                metadata_={"proposal_only": True},
-                is_active=True,
-            )
-            self.session.add(memory)
-            await self.session.flush()
-        return memory, is_new
 
     @staticmethod
     def _semantic_text(value: dict[str, Any]) -> str:
@@ -459,3 +409,34 @@ class MemoryService:
         memory.freshness_score = max(0.2, 1.0 - (age_days / (half_life_days * 2)))
         if memory.refresh_after is None and memory.kind in {"goal", "routine", "friction"}:
             memory.refresh_after = last_confirmed_at + timedelta(days=half_life_days)
+
+    async def _kind_seen_at(
+        self,
+        user_id: str,
+        kind: str,
+        *,
+        default: datetime,
+    ) -> datetime:
+        audit_seen = (
+            await self.session.execute(
+                select(func.min(MemoryKindAudit.seen_at)).where(
+                    MemoryKindAudit.user_id == user_id,
+                    MemoryKindAudit.kind == kind,
+                )
+            )
+        ).scalar_one_or_none()
+        if audit_seen is not None:
+            return audit_seen if audit_seen.tzinfo is not None else audit_seen.replace(tzinfo=UTC)
+        memory_seen = (
+            await self.session.execute(
+                select(func.min(Memory.created_at)).where(
+                    Memory.user_id == user_id,
+                    Memory.kind == kind,
+                )
+            )
+        ).scalar_one_or_none()
+        if memory_seen is not None:
+            return (
+                memory_seen if memory_seen.tzinfo is not None else memory_seen.replace(tzinfo=UTC)
+            )
+        return default

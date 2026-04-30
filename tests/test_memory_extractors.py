@@ -83,3 +83,34 @@ async def test_llm_extraction_deduplicates_by_kind_key(monkeypatch) -> None:
     goal_mutations = [m for m in mutations if m.kind == "goal" and m.key == "current_goal"]
     assert len(goal_mutations) == 1
     get_settings.cache_clear()
+
+
+async def test_llm_extraction_accepts_novel_kind(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    from healthclaw.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=(
+                '[{"kind":"sleep_pattern","key":"late_scroll_drift",'
+                '"value":{"text":"late-night scrolling tends to push bedtime later"},'
+                '"confidence":0.76,"reason":"Observed recurring pattern","layer":"durable"}]'
+            ),
+            model="test",
+            usage={"total_tokens": 18},
+        )
+
+    with patch(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    ):
+        mutations = await extract_memory_mutations_enriched(
+            "I keep scrolling at night and it pushes sleep later than I want."
+        )
+
+    assert len(mutations) == 1
+    assert mutations[0].kind == "sleep_pattern"
+    assert mutations[0].key == "late_scroll_drift"
+    get_settings.cache_clear()

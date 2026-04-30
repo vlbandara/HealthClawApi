@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.agent.time_context import build_time_context
+from healthclaw.agent.wellbeing import WellbeingDecision
 from healthclaw.core.config import Settings, get_settings
 from healthclaw.db.models import (
     ConversationThread,
@@ -209,57 +210,12 @@ class HeartbeatService:
         user = await self.session.get(User, job.user_id)
         if user is None:
             return False, "user_not_found"
-        if not user.proactive_enabled:
-            return False, "proactive_disabled"
 
-        time_context = build_time_context(user, now=now)
-
-        # Internal jobs (dream/consolidate) only run DURING quiet hours —
-        # invert the gate and skip cooldown/quota checks entirely.
+        # Internal jobs (dream/consolidate) only run DURING quiet hours.
         if job.kind in {"dream", "consolidate"}:
+            time_context = build_time_context(user, now=now)
             if not time_context.quiet_hours:
                 return False, "awaiting_quiet_hours"
-            return True, "eligible"
-
-        if user.proactive_paused_until is not None and user.proactive_paused_until > now:
-            return False, "proactive_paused"
-        if user.monthly_llm_tokens_used >= user.monthly_llm_token_budget:
-            return False, "quota_exceeded"
-        if time_context.quiet_hours:
-            return False, "quiet_hours"
-        cooldown_start = now - timedelta(minutes=user.proactive_cooldown_minutes)
-        recent_sent = await self.session.execute(
-            select(ProactiveEvent)
-            .where(
-                ProactiveEvent.user_id == user.id,
-                ProactiveEvent.decision == "sent",
-                ProactiveEvent.created_at >= cooldown_start,
-            )
-            .limit(1)
-        )
-        if recent_sent.scalar_one_or_none() is not None:
-            return False, "cooldown"
-        recent_heartbeat = await self.session.execute(
-            select(HeartbeatEvent)
-            .where(
-                HeartbeatEvent.user_id == user.id,
-                HeartbeatEvent.decision == "sent",
-                HeartbeatEvent.created_at >= cooldown_start,
-            )
-            .limit(1)
-        )
-        if recent_heartbeat.scalar_one_or_none() is not None:
-            return False, "cooldown"
-        day_start = now - timedelta(hours=24)
-        sent_today = await self.session.execute(
-            select(HeartbeatEvent).where(
-                HeartbeatEvent.user_id == user.id,
-                HeartbeatEvent.decision == "sent",
-                HeartbeatEvent.created_at >= day_start,
-            )
-        )
-        if len(list(sent_today.scalars())) >= user.proactive_max_per_day:
-            return False, "daily_limit"
         return True, "eligible"
 
     async def should_send_soft(
@@ -267,11 +223,27 @@ class HeartbeatService:
         job: HeartbeatJob,
         user: User,
         now: datetime,
-    ) -> tuple[str, str | None, str, dict, str | None]:
-        """LLM soft gate. Returns (decision, action, reason, audit input, model)."""
-        from healthclaw.heartbeat.decision import build_decision_input, decide
+    ) -> WellbeingDecision:
+        """Reflection-driven outbound decision for a heartbeat job."""
+        from healthclaw.heartbeat.decision import decide
 
         time_context = build_time_context(user, now=now)
+        engagement = await self._engagement_state(user.id)
+        relationship = build_relationship_context(engagement, now=now)
+        outbound_count_24h, last_outbound_at = await self._outbound_activity(user.id, now=now)
+
+        if outbound_count_24h >= user.proactive_max_per_day:
+            return WellbeingDecision(
+                reach_out=False,
+                when="hold",
+                message_seed="",
+                rationale="daily delivery cap reached",
+                model=None,
+                decision_input={
+                    "candidate": {"kind": job.kind, "channel": job.channel},
+                    "delivery_floor_applied": True,
+                },
+            )
 
         open_loops_result = await self.session.execute(
             select(OpenLoop).where(
@@ -281,7 +253,6 @@ class HeartbeatService:
         )
         open_loops = list(open_loops_result.scalars())
 
-        # Load last 3 exchange pairs for context
         msgs_result = await self.session.execute(
             select(Message)
             .where(
@@ -297,36 +268,6 @@ class HeartbeatService:
             for m in recent_msgs
         ]
 
-        engagement = await self._engagement_state(user.id)
-        relationship = build_relationship_context(engagement, now=now)
-        decision_input = build_decision_input(
-            job,
-            user,
-            time_context,
-            open_loops,
-            recent_exchanges,
-            relationship=relationship,
-        )
-
-        stale_open_loop = self._has_stale_open_loop(job, open_loops)
-        if job.kind == "autonomous_tick" and self._recent_meaningful_exchange_within(
-            relationship,
-            hours=12,
-            now=now,
-        ) and not stale_open_loop:
-            return "skip", None, "recent_meaningful_exchange", decision_input, None
-        if (
-            job.kind == "autonomous_tick"
-            and float(relationship.get("sentiment_ema") or 0.0) < -0.5
-            and not stale_open_loop
-            and not parse_heartbeat_md(user.heartbeat_md).standing_intent
-        ):
-            return "skip", None, "low_sentiment_without_trigger", decision_input, None
-
-        if job.kind in {"ritual", "autonomous_tick"} and self._silent_for_48h(user, now):
-            if not self._allows_long_silence_ping(user.heartbeat_md):
-                return "skip", None, "user_silent_48h", decision_input, None
-
         result = await decide(
             job=job,
             user=user,
@@ -335,55 +276,24 @@ class HeartbeatService:
             recent_exchanges=recent_exchanges,
             settings=self._settings,
             relationship=relationship,
+            outbound_count_24h=outbound_count_24h,
+            last_outbound_at=last_outbound_at,
+            daily_cap=user.proactive_max_per_day,
         )
-        return result.decision, result.action, result.reason, result.decision_input, result.model
-
-    @staticmethod
-    def _silent_for_48h(user: User, now: datetime) -> bool:
-        if user.last_active_at is None:
-            return True
-        last_active = user.last_active_at
-        if last_active.tzinfo is None:
-            last_active = last_active.replace(tzinfo=UTC)
-        return now - last_active >= timedelta(hours=48)
+        return WellbeingDecision(
+            reach_out=result.decision == "run",
+            when=result.when,
+            message_seed=result.action or "",
+            rationale=result.reason,
+            model=result.model or None,
+            decision_input=result.decision_input,
+        )
 
     async def _engagement_state(self, user_id: str) -> UserEngagementState | None:
         result = await self.session.execute(
             select(UserEngagementState).where(UserEngagementState.user_id == user_id)
         )
         return result.scalar_one_or_none()
-
-    @staticmethod
-    def _has_stale_open_loop(job: HeartbeatJob, open_loops: list[OpenLoop]) -> bool:
-        if isinstance(job.payload.get("open_loop_id"), str):
-            return True
-        now = datetime.now(UTC)
-        for loop in open_loops:
-            created_at = loop.created_at
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=UTC)
-            else:
-                created_at = created_at.astimezone(UTC)
-            if (now - created_at).total_seconds() >= 18 * 3600:
-                return True
-        return False
-
-    @staticmethod
-    def _recent_meaningful_exchange_within(
-        relationship: dict,
-        *,
-        hours: int,
-        now: datetime,
-    ) -> bool:
-        value = relationship.get("last_meaningful_exchange_at")
-        if not isinstance(value, datetime):
-            return False
-        last_meaningful = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-        return now - last_meaningful.astimezone(UTC) <= timedelta(hours=hours)
-
-    @staticmethod
-    def _allows_long_silence_ping(heartbeat_md: str) -> bool:
-        return parse_heartbeat_md(heartbeat_md).allow_long_silence is True
 
     async def render_job(self, job: HeartbeatJob, action_override: str | None = None) -> str:
         # Ritual: use the action_override from the decision gate, or fall back to the template
@@ -498,3 +408,46 @@ class HeartbeatService:
                 skip_reason=skip_reason,
             )
         )
+
+    async def _outbound_activity(
+        self,
+        user_id: str,
+        *,
+        now: datetime,
+    ) -> tuple[int, datetime | None]:
+        day_start = now - timedelta(hours=24)
+        proactive_stats = (
+            await self.session.execute(
+                select(func.count(), func.max(ProactiveEvent.created_at)).where(
+                    ProactiveEvent.user_id == user_id,
+                    ProactiveEvent.decision == "sent",
+                    ProactiveEvent.created_at >= day_start,
+                )
+            )
+        ).one()
+        heartbeat_stats = (
+            await self.session.execute(
+                select(func.count(), func.max(HeartbeatEvent.created_at)).where(
+                    HeartbeatEvent.user_id == user_id,
+                    HeartbeatEvent.decision == "sent",
+                    HeartbeatEvent.created_at >= day_start,
+                )
+            )
+        ).one()
+        proactive_count, proactive_last = proactive_stats
+        heartbeat_count, heartbeat_last = heartbeat_stats
+        return int(proactive_count or 0) + int(heartbeat_count or 0), _latest_datetime(
+            proactive_last,
+            heartbeat_last,
+        )
+
+
+def _latest_datetime(*values: datetime | None) -> datetime | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    normalized = [
+        value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        for value in present
+    ]
+    return max(normalized)

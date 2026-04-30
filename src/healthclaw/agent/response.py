@@ -4,8 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from healthclaw.agent.safety import SafetyDecision
-from healthclaw.agent.soul import streaks_block, system_prompt, trust_band_label
+from healthclaw.agent.soul import system_prompt
 from healthclaw.agent.time_context import TimeContext
 from healthclaw.core.config import get_settings
 from healthclaw.integrations.openrouter import OpenRouterClient
@@ -23,77 +22,24 @@ class GenerationResult:
 ACTION_OUTPUT_CONTRACT = (
     "Output a single JSON object with exactly these keys: "
     '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation]}. '
-    "Allowed action types and their required fields:\n"
+    'Each action must use {"type": str, "payload": {...}, "rationale": str | null}. '
+    "Known capabilities right now:\n"
     "  create_reminder: "
-    '{"type":"create_reminder","text":"<label>","due_at_iso":"<ISO 8601 with tz>"}\n'
+    '{"type":"create_reminder","payload":{"text":"<label>",'
+    '"due_at_iso":"<ISO 8601 with tz>"},"rationale":"<why>"}\n'
     "  create_open_loop: "
-    '{"type":"create_open_loop","title":"<title>","kind":"commitment"}\n'
+    '{"type":"create_open_loop","payload":{"title":"<title>",'
+    '"kind":"commitment"},"rationale":"<why>"}\n'
     "  close_open_loop: "
-    '{"type":"close_open_loop","id":"<exact id>","summary":"<one line>",'
-    '"outcome":"completed"|"dropped"|"reframed"}\n'
-    '  none: {"type":"none"}\n'
+    '{"type":"close_open_loop","payload":{"id":"<exact id>","summary":"<one line>",'
+    '"outcome":"completed"|"dropped"|"reframed"},"rationale":"<why>"}\n'
+    '  none: {"type":"none","payload":{},"rationale":null}\n'
+    "If you want a capability that does not exist yet, "
+    "still propose it with a clear type and payload. "
     "Only say you set, scheduled, or created something "
     "when the matching action appears in actions. "
     "If timing/details are uncertain, ask the user instead of guessing."
 )
-
-
-def _deterministic_companion_response(
-    user_content: str,
-    safety: SafetyDecision,
-    time_context: TimeContext,
-    memories: list[MemoryLike],
-) -> str:
-    if safety.category == "crisis":
-        return (
-            "I am really sorry this is where things are right now. I cannot be your "
-            "emergency support, but this is urgent: contact local emergency services "
-            "now, or reach a trusted person who can stay with you. If you are in the "
-            "US, call or text 988. If you are elsewhere, use your local crisis line "
-            "or emergency number. Send one short message now: 'I am not safe alone.'"
-        )
-
-    if safety.category == "medical_boundary":
-        return (
-            "I can support the behavior side, but I cannot diagnose, treat, or advise "
-            "on medication or injury decisions. If this feels severe, sudden, or "
-            "unusual, contact a qualified clinician or urgent care. For right now, "
-            "keep the next step simple: pause, note what changed, and avoid pushing "
-            "training or recovery decisions until you have proper guidance."
-        )
-
-    remembered_goal = next(
-        (
-            memory_value(memory).get("text")
-            for memory in memories
-            if memory.get("key") == "current_goal"
-        ),
-        None,
-    )
-    prefix = {
-        "morning": "Good morning. Set the day up with one small move. ",
-        "afternoon": "",
-        "evening": "For this evening, keep the focus on review and wind-down. ",
-        "night": "Since it is late, keep this low-effort and low-stimulation. ",
-        "late_night": "This is a late-night check-in, so keep it light. ",
-    }.get(time_context.part_of_day, "")
-    lapse = (
-        "It has been a while since the last check-in, so there is no need to recap everything. "
-        if time_context.long_lapse
-        else ""
-    )
-    goal_line = f"Keep the focus on {remembered_goal}. " if remembered_goal else ""
-    quiet = (
-        "I will avoid proactive follow-ups during your quiet hours. "
-        if time_context.quiet_hours
-        else ""
-    )
-    return (
-        f"{prefix}{lapse}{goal_line}{quiet}"
-        "Pick one next step that is small enough to do today. Make it concrete: set "
-        "the next cutoff, prepare the room, choose the first 10 minutes of the "
-        "routine, or scale training down if recovery is the priority."
-    )
 
 
 def memory_value(memory: MemoryLike) -> dict[str, object]:
@@ -132,83 +78,35 @@ def _recent_conversation_lines(
     return lines
 
 
-def _lifecycle_stage(recent_messages: list[dict[str, object]]) -> str:
-    message_count = len(recent_messages)
-    if message_count < 8:
-        return "onboarding"
-    if message_count < 30:
-        return "early"
-    return "settling"
-
-
 async def generate_companion_response(
     user_content: str,
-    safety: SafetyDecision,
     time_context: TimeContext,
     memories: list[MemoryLike],
     soul_preferences: dict[str, object] | None = None,
-    bridges: list[str] | None = None,
     open_loops: list[dict[str, object]] | None = None,
     streaks: list[dict[str, object]] | None = None,
     recent_messages: list[dict[str, object]] | None = None,
     memory_documents: dict[str, str] | None = None,
     user_context: dict[str, object] | None = None,
-    safety_category: str | None = None,
+    observable_signals: dict[str, object] | None = None,
     thread_summary: str | None = None,
     relationship_signals: list[str] | None = None,
 ) -> tuple[GenerationResult, dict[str, object]]:
     user_context = user_context or {}
-    trust_band = trust_band_label(_trust_level(user_context))
-    safety_category = safety_category or safety.category
+    observable_signals = observable_signals or {}
     streaks = streaks or []
-    streaks_surfaced = bool(streaks_block(streaks, trust_band, safety_category))
-
-    if safety.category != "wellness":
-        return (
-            GenerationResult(
-                message=_deterministic_companion_response(
-                    user_content, safety, time_context, memories
-                ),
-                actions=[],
-                memory_proposals=[],
-            ),
-            {
-                "provider": "deterministic",
-                "reason": safety.category,
-                "trust_band": trust_band,
-                "streaks_surfaced": False,
-            },
-        )
+    streaks_surfaced = bool(streaks)
 
     settings = get_settings()
     client = OpenRouterClient(settings)
     if not client.enabled:
-        return (
-            GenerationResult(
-                message=_deterministic_companion_response(
-                    user_content, safety, time_context, memories
-                ),
-                actions=[],
-                memory_proposals=[],
-            ),
-            {
-                "provider": "deterministic",
-                "reason": "openrouter_not_configured",
-                "trust_band": trust_band,
-                "streaks_surfaced": False,
-            },
-        )
+        return _offline_generation("openrouter_not_configured")
 
     memory_context = "\n".join(_memory_lines(memories)) or "- none"
-
-    # Continuity bridges as a tagged block in the user turn (keeps system prompt cacheable)
-    bridge_block = ""
-    if bridges:
-        bridge_text = "\n".join(f"- {b}" for b in bridges)
-        bridge_block = f"\n<recent_life_bridge>\n{bridge_text}\n</recent_life_bridge>"
-    relationship_block = _relationship_signal_block(
+    observable_block = _observable_signals_block(
         user_context,
         time_context,
+        observable_signals=observable_signals,
         relationship_signals=relationship_signals,
     )
     open_loop_lines = []
@@ -245,11 +143,18 @@ async def generate_companion_response(
                 soul_preferences,
                 user_id=str(runtime_context["user_id"]),
                 timezone=str(runtime_context["timezone"]),
-                lifecycle_stage=_lifecycle_stage(recent_messages),
+                local_time=time_context.to_dict(),
+                recent_message_count=len(recent_messages),
                 memory_documents=memory_documents,
                 trust_level=_trust_level(user_context),
+                sentiment_ema=_float_or_none(user_context.get("sentiment_ema")),
+                voice_text_ratio=_float_or_none(user_context.get("voice_text_ratio")),
+                reply_latency_seconds_ema=_float_or_none(
+                    user_context.get("reply_latency_seconds_ema")
+                ),
                 streaks=streaks,
-                safety_category=safety_category,
+                open_loops=open_loops,
+                safety_category="model_managed",
             )
             + "\n\n# Action Output Contract\n\n"
             + ACTION_OUTPUT_CONTRACT,
@@ -265,8 +170,7 @@ async def generate_companion_response(
                 f"{conversation_digest or '- none'}\n\n"
                 "# Recent Conversation\n\n"
                 f"{recent_context}"
-                f"{bridge_block}"
-                f"{relationship_block}\n\n"
+                f"{observable_block}\n\n"
                 "# Open Loops\n\n"
                 f"{open_loop_context}\n\n"
                 "# Current User Message\n\n"
@@ -287,21 +191,7 @@ async def generate_companion_response(
             metadata=metadata,
         )
     except RuntimeError:
-        return (
-            GenerationResult(
-                message=_deterministic_companion_response(
-                    user_content, safety, time_context, memories
-                ),
-                actions=[],
-                memory_proposals=[],
-            ),
-            {
-                "provider": "deterministic",
-                "reason": "openrouter_error",
-                "trust_band": trust_band,
-                "streaks_surfaced": False,
-            },
-        )
+        return _offline_generation("openrouter_error")
     generation_result, parse_error = _parse_generation_payload(result.content)
     return (
         generation_result,
@@ -309,10 +199,8 @@ async def generate_companion_response(
             "provider": "openrouter",
             "model": result.model,
             "usage": result.usage,
-            "bridges_used": len(bridges) if bridges else 0,
             "recent_messages_used": len(recent_lines),
             "conversation_digest_used": bool(conversation_digest),
-            "trust_band": trust_band,
             "streaks_surfaced": streaks_surfaced,
             "actions.parse_error": parse_error,
         },
@@ -360,41 +248,80 @@ def _trust_level(user_context: dict[str, object]) -> float | None:
     return float(value) if isinstance(value, int | float) else None
 
 
-def _relationship_signal_block(
+def _offline_generation(reason: str) -> tuple[GenerationResult, dict[str, object]]:
+    return (
+        GenerationResult(
+            message="I'm offline for a moment — try again in a bit.",
+            actions=[],
+            memory_proposals=[],
+        ),
+        {
+            "provider": "offline",
+            "reason": reason,
+            "streaks_surfaced": False,
+        },
+    )
+
+
+def _observable_signals_block(
     user_context: dict[str, object],
     time_context: TimeContext,
     *,
+    observable_signals: dict[str, object] | None = None,
     relationship_signals: list[str] | None = None,
 ) -> str:
-    lines = list(relationship_signals or [])
-    if not lines:
-        sentiment_ema = _float_or_none(user_context.get("sentiment_ema"))
-        voice_text_ratio = _float_or_none(user_context.get("voice_text_ratio"))
-        reply_latency = _float_or_none(user_context.get("reply_latency_seconds_ema"))
-        if sentiment_ema is not None and sentiment_ema <= -0.35:
-            lines.append("Use lower-pressure phrasing, no cheerleading, and smaller next steps.")
-        if voice_text_ratio is not None and voice_text_ratio >= 0.65:
-            lines.append("Favor concise spoken-style phrasing that reads naturally out loud.")
-        if reply_latency is not None and reply_latency >= 43_200:
-            lines.append("Do not frame slow re-entry or delayed replies as failure.")
-        if _is_recent_meaningful_exchange(
-            user_context.get("last_meaningful_exchange_at"),
-            time_context,
-        ):
-            lines.append("Brief continuity references are safe without asking for a full recap.")
-    if not lines:
-        return ""
-    relationship_text = "\n".join(f"- {line}" for line in lines)
-    return f"\n<relationship_signals>\n{relationship_text}\n</relationship_signals>"
+    observable_signals = observable_signals or {}
+    last_meaningful_hours = _hours_since_exchange(
+        user_context.get("last_meaningful_exchange_at"),
+        time_context,
+    )
+    lines = [
+        "- sentiment_ema="
+        + _format_signal_value(_float_or_none(user_context.get("sentiment_ema"))),
+        "- voice_text_ratio="
+        + _format_signal_value(_float_or_none(user_context.get("voice_text_ratio"))),
+        (
+            "- reply_latency_hours="
+            f"{_format_signal_value(_seconds_to_hours(user_context.get('reply_latency_seconds_ema')))}"
+        ),
+        f"- last_meaningful_exchange_hours_ago={_format_signal_value(last_meaningful_hours)}",
+        f"- part_of_day={time_context.part_of_day}",
+        f"- quiet_hours={str(time_context.quiet_hours).lower()}",
+        f"- interaction_gap_days={_format_signal_value(time_context.interaction_gap_days)}",
+        f"- long_lapse={str(time_context.long_lapse).lower()}",
+        f"- message_length={_format_signal_value(observable_signals.get('message_length'))}",
+        f"- content_type={observable_signals.get('content_type', 'unknown')}",
+        f"- is_voice={str(bool(observable_signals.get('is_voice'))).lower()}",
+        f"- has_attachments={str(bool(observable_signals.get('has_attachments'))).lower()}",
+        f"- attachment_count={_format_signal_value(observable_signals.get('attachment_count'))}",
+        (
+            "- transcription_uncertain="
+            f"{str(bool(observable_signals.get('transcription_uncertain'))).lower()}"
+        ),
+    ]
+    for signal in relationship_signals or []:
+        lines.append(f"- note={signal}")
+    return "\n<observable_signals>\n" + "\n".join(lines) + "\n</observable_signals>"
 
 
 def _float_or_none(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) else None
 
 
-def _is_recent_meaningful_exchange(value: object, time_context: TimeContext) -> bool:
+def _seconds_to_hours(value: object) -> float | None:
+    seconds = _float_or_none(value)
+    return None if seconds is None else round(seconds / 3600, 2)
+
+
+def _format_signal_value(value: object) -> str:
+    if value is None:
+        return "unknown"
+    return str(value)
+
+
+def _hours_since_exchange(value: object, time_context: TimeContext) -> float | None:
     if not isinstance(value, datetime):
-        return False
+        return None
     meaningful_at = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     local_now = datetime.fromisoformat(time_context.local_datetime).astimezone(UTC)
-    return local_now - meaningful_at.astimezone(UTC) <= timedelta(hours=24)
+    return round((local_now - meaningful_at.astimezone(UTC)) / timedelta(hours=1), 2)

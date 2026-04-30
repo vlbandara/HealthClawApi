@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
-from healthclaw.agent.soul import sanitized_soul_preferences
+from healthclaw.agent.soul import normalize_soul_preferences
 from healthclaw.api.deps import SessionDep
 from healthclaw.core.security import require_api_key
 from healthclaw.core.tracing import new_trace_id
@@ -127,14 +127,12 @@ async def get_soul_preferences(user_id: str, session: SessionDep) -> SoulPrefere
     )
     preferences = result.scalar_one_or_none()
     if preferences is None:
-        safe = sanitized_soul_preferences({})
-        return SoulPreferencesRead(user_id=user_id, version=1, **safe)
+        return SoulPreferencesRead(user_id=user_id, version=1)
     return SoulPreferencesRead(
         user_id=user_id,
         version=preferences.version,
         tone_preferences=preferences.tone_preferences,
         response_preferences=preferences.response_preferences,
-        blocked_policy_keys=preferences.blocked_policy_keys,
     )
 
 
@@ -151,34 +149,33 @@ async def patch_soul_preferences(
         "tone_preferences": payload.tone_preferences or {},
         "response_preferences": payload.response_preferences or {},
     }
-    safe = sanitized_soul_preferences(merged)
+    normalized = normalize_soul_preferences(merged)
     if preferences is None:
         preferences = UserSoulPreference(
             user_id=user_id,
             version=1,
-            tone_preferences=safe["tone_preferences"],
-            response_preferences=safe["response_preferences"],
-            blocked_policy_keys=safe["blocked_policy_keys"],
+            tone_preferences=normalized["tone_preferences"],
+            response_preferences=normalized["response_preferences"],
+            blocked_policy_keys=[],
         )
         session.add(preferences)
     else:
         preferences.version += 1
         preferences.tone_preferences = {
             **preferences.tone_preferences,
-            **safe["tone_preferences"],
+            **normalized["tone_preferences"],
         }
         preferences.response_preferences = {
             **preferences.response_preferences,
-            **safe["response_preferences"],
+            **normalized["response_preferences"],
         }
-        preferences.blocked_policy_keys = safe["blocked_policy_keys"]
+        preferences.blocked_policy_keys = []
     await session.commit()
     return SoulPreferencesRead(
         user_id=user_id,
         version=preferences.version,
         tone_preferences=preferences.tone_preferences,
         response_preferences=preferences.response_preferences,
-        blocked_policy_keys=preferences.blocked_policy_keys,
     )
 
 

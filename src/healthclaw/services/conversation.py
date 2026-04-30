@@ -20,6 +20,7 @@ from healthclaw.db.models import (
     InboundEvent,
     Message,
     OpenLoop,
+    ProposedAction,
     Ritual,
     SafetyEvent,
     TraceRef,
@@ -43,9 +44,9 @@ from healthclaw.memory.embeddings import EmbeddingClient
 from healthclaw.memory.service import MemoryService
 from healthclaw.proactivity.service import ProactivityService
 from healthclaw.schemas.actions import (
-    CloseOpenLoopAction,
-    CreateOpenLoopAction,
-    CreateReminderAction,
+    CloseOpenLoopPayload,
+    CreateOpenLoopPayload,
+    CreateReminderPayload,
 )
 from healthclaw.schemas.events import ConversationEvent
 from healthclaw.schemas.memory import MemoryMutation
@@ -204,6 +205,7 @@ class ConversationService:
         if inbound_event is not None:
             inbound_event.user_message_id = user_message.id
         is_command = event.content.startswith("/")
+        live_safety_category = "wellness"
 
         if command_response := await self._handle_command(
             event,
@@ -310,7 +312,13 @@ class ConversationService:
                 "user": user_context,
                 "user_content": event.content,
                 "channel": event.channel,
-                "user_message": {"id": user_message.id, "is_command": is_command},
+                "user_message": {
+                    "id": user_message.id,
+                    "is_command": is_command,
+                    "content_type": event.content_type,
+                    "attachments": event.metadata.get("attachments"),
+                    "transcription_uncertain": self._transcription_uncertain(event.metadata),
+                },
                 "memories": selected_memories,
                 "soul_preferences": soul_preferences,
                 "open_loops": selected_open_loops,
@@ -344,7 +352,7 @@ class ConversationService:
             trace_id=trace_id,
             metadata_={
                 "trace_id": trace_id,
-                "safety_category": state["safety"]["category"],
+                "safety_category": live_safety_category,
                 "generation": state.get("trace_metadata", {}).get("generation", {}),
             },
         )
@@ -370,7 +378,7 @@ class ConversationService:
             advanced_streaks = await RitualStreakService(self.session).record_meaningful_exchange(
                 user,
                 user_message.created_at,
-                state["safety"]["category"],
+                live_safety_category,
             )
             streak_updates = self._streak_progress_payload(advanced_streaks)
             if streak_updates:
@@ -423,9 +431,9 @@ class ConversationService:
             SafetyEvent(
                 user_id=user.id,
                 message_id=user_message.id,
-                category=state["safety"]["category"],
-                severity=state["safety"]["severity"],
-                action=state["safety"]["action"],
+                category="model_managed",
+                severity="info",
+                action="llm_response",
             )
         )
         self.session.add(
@@ -446,11 +454,7 @@ class ConversationService:
                 state=redacted_payload(
                     {
                         "response": state["response"],
-                        "safety": {
-                            "category": state["safety"]["category"],
-                            "severity": state["safety"]["severity"],
-                            "action": state["safety"]["action"],
-                        },
+                        "safety_category": live_safety_category,
                         "time_context": state["time_context"],
                         "trace_metadata": state.get("trace_metadata", {}),
                         "memory_updates": memory_updates,
@@ -466,7 +470,7 @@ class ConversationService:
             assistant_message_id=assistant_message.id,
             thread_id=thread.id,
             response=assistant_message.content,
-            safety_category=state["safety"]["category"],
+            safety_category=live_safety_category,
             time_context=state["time_context"],
             memory_updates=memory_updates,
         ).model_dump(mode="json")
@@ -493,11 +497,18 @@ class ConversationService:
         dropped = list(
             state.get("trace_metadata", {}).get("action_execution", {}).get("dropped", [])
         )
+        proposed: list[dict[str, object]] = []
         for raw_action in state.get("actions_taken", []):
             action_type = str(raw_action.get("type") or "")
+            payload = (
+                raw_action.get("payload")
+                if isinstance(raw_action.get("payload"), dict)
+                else {}
+            )
+            rationale = str(raw_action.get("rationale") or "").strip() or None
             try:
                 if action_type == "create_reminder":
-                    action = CreateReminderAction.model_validate(raw_action)
+                    action = CreateReminderPayload.model_validate(payload)
                     due_at = self._parse_iso_datetime(action.due_at_iso)
                     if due_at is None:
                         dropped.append({"type": action_type, "reason": "due_at_invalid"})
@@ -511,7 +522,7 @@ class ConversationService:
                     )
                     executed.append({"type": action_type, "id": reminder.id})
                 elif action_type == "create_open_loop":
-                    action = CreateOpenLoopAction.model_validate(raw_action)
+                    action = CreateOpenLoopPayload.model_validate(payload)
                     due_after = self._parse_iso_datetime(action.due_after_iso)
                     loop = await heartbeat.create_open_loop(
                         user_id=user.id,
@@ -523,7 +534,7 @@ class ConversationService:
                     )
                     executed.append({"type": action_type, "id": loop.id})
                 elif action_type == "close_open_loop":
-                    action = CloseOpenLoopAction.model_validate(raw_action)
+                    action = CloseOpenLoopPayload.model_validate(payload)
                     async with start_span(
                         "loop.close.execute",
                         attributes={
@@ -581,8 +592,34 @@ class ConversationService:
                             "outcome": action.outcome,
                         }
                     )
+                elif action_type and action_type != "none":
+                    proposed_action = ProposedAction(
+                        user_id=user.id,
+                        type=action_type[:128],
+                        payload=payload,
+                        rationale=rationale,
+                        status="unknown_type",
+                    )
+                    self.session.add(proposed_action)
+                    await self.session.flush()
+                    proposed.append({"type": action_type, "id": proposed_action.id})
+                    executed.append(
+                        {
+                            "type": action_type,
+                            "id": proposed_action.id,
+                            "status": "unknown_type",
+                        }
+                    )
             except Exception:
                 dropped.append({"type": action_type or "unknown", "reason": "execution_error"})
+
+        if proposed:
+            proposed_types = ", ".join(str(item["type"]) for item in proposed[:3])
+            state["response"] = (
+                state["response"].rstrip()
+                + "\n\n"
+                + f"I tried to handle {proposed_types}, but I don't have that capability yet."
+            )
 
         state["actions_taken"] = executed
         action_types = [str(item.get("type") or "") for item in executed]
@@ -593,6 +630,7 @@ class ConversationService:
             .get("action_execution", {})
             .get("action.consistency", "ok"),
             "dropped": dropped,
+            "proposed": proposed,
         }
         state.setdefault("trace_metadata", {})["action_execution"] = execution_trace
 

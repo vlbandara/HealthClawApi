@@ -1,35 +1,60 @@
 from __future__ import annotations
 
-from healthclaw.agent.soul import (
-    default_policy_memory,
-    system_prompt,
-    trust_band_label,
-    trust_tone_block,
-)
+from healthclaw.agent.soul import system_prompt
 
 
-def test_system_prompt_prioritizes_natural_first_chat() -> None:
+def test_system_prompt_uses_companion_brief_and_examples() -> None:
     prompt = system_prompt()
 
-    assert "# Healthclaw Identity" in prompt
-    assert "# Voice" in prompt
-    assert "# Healthclaw SOUL.md" in prompt
-    assert "lead with one useful move before asking a question" in prompt
-    assert "brand-new or low-context users" in prompt.lower()
-    assert "ask small human questions before steering into goals" in prompt.lower()
-    assert "ask at most one good question" in prompt
-    assert "do not mention old memories, routines, reminders" in prompt.lower()
+    assert "# Companion Brief" in prompt
+    assert "# Example Exchanges" in prompt
+    assert "private wellbeing companion" in prompt
+    assert "continuity first" in prompt.lower()
+    assert "Put the phone down for ten minutes" in prompt
+    assert "call or text 988 now" in prompt
+    assert "Chest pain is not something to guess through over chat" in prompt
 
 
-def test_system_prompt_blocks_scripted_filler() -> None:
-    prompt = system_prompt()
+def test_system_prompt_surfaces_observable_context_without_tone_bands() -> None:
+    prompt = system_prompt(
+        soul_preferences={
+            "tone_preferences": {"directness": "plain"},
+            "response_preferences": {"length": "short"},
+        },
+        user_id="u-observable",
+        timezone="Asia/Colombo",
+        local_time={"part_of_day": "night", "quiet_hours": True},
+        recent_message_count=12,
+        trust_level=0.68,
+        sentiment_ema=-0.42,
+        voice_text_ratio=0.71,
+        reply_latency_seconds_ema=50_400.0,
+        streaks=[
+            {
+                "kind": "morning_check_in",
+                "title": "Morning check-in",
+                "streak_count": 7,
+                "streak_last_date": "2026-04-23",
+            }
+        ],
+        open_loops=[
+            {"id": "loop-1", "title": "go for a walk", "kind": "commitment", "age_hours": 20.0}
+        ],
+    )
 
-    assert "gentle reset" in prompt
-    assert "my purpose is" in prompt
-    assert "one small task" in prompt
-    assert "I'm here to help" in prompt
-    assert "Adult, Still Safe" in prompt
-    assert "medical-boundary rules are immutable" in prompt
+    assert "# Observable Context" in prompt
+    assert "lifecycle_hint" not in prompt
+    assert "recent_message_count: 12" in prompt
+    assert "trust_level: 0.68" in prompt
+    assert "sentiment_ema: -0.42" in prompt
+    assert "voice_text_ratio: 0.71" in prompt
+    assert "reply_latency_seconds_ema: 50400.0" in prompt
+    assert "tone.directness=plain" in prompt
+    assert "response.length=short" in prompt
+    assert "kind=morning_check_in" in prompt
+    assert "id=loop-1" in prompt
+    assert "Trust Tone Band" not in prompt
+    assert "Runtime Voice Contract" not in prompt
 
 
 def test_system_prompt_includes_markdown_memory_documents() -> None:
@@ -46,38 +71,3 @@ def test_system_prompt_includes_markdown_memory_documents() -> None:
     assert "Preferred name: Vinodh" in prompt
     assert "# Memory.md" in prompt
     assert "Likes concise replies" in prompt
-
-
-def test_default_policy_memory_matches_natural_voice() -> None:
-    policy = default_policy_memory()
-
-    assert policy["default_next_step"] == "lead with one useful move before asking a question"
-    assert "generic assistant filler" in policy["avoid"]
-
-
-def test_trust_band_label_returns_correct_band() -> None:
-    assert trust_band_label(None) == "low"
-    assert trust_band_label(0.0) == "low"
-    assert trust_band_label(0.39) == "low"
-    assert trust_band_label(0.4) == "medium"
-    assert trust_band_label(0.74) == "medium"
-    assert trust_band_label(0.75) == "high"
-    assert trust_band_label(1.0) == "high"
-
-
-def test_trust_tone_block_varies_by_band() -> None:
-    low_block = trust_tone_block(0.2)
-    high_block = trust_tone_block(0.9)
-
-    assert "low" in low_block
-    assert "high" in high_block
-    assert low_block != high_block
-
-
-def test_system_prompt_includes_trust_tone_block_and_varies_by_band() -> None:
-    low_prompt = system_prompt(trust_level=0.1)
-    high_prompt = system_prompt(trust_level=0.9)
-
-    assert "Trust Tone Band: low" in low_prompt
-    assert "Trust Tone Band: high" in high_prompt
-    assert low_prompt != high_prompt
