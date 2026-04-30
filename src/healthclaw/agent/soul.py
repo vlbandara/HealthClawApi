@@ -105,7 +105,8 @@ def _observable_context_block(
         f"- user_id: {user_id}",
         f"- timezone: {timezone}",
         f"- local_time: {local_time or {'status': 'unknown'}}",
-        f"- recent_message_count: {recent_message_count if recent_message_count is not None else 'unknown'}",
+        "- recent_message_count: "
+        + (str(recent_message_count) if recent_message_count is not None else "unknown"),
         f"- trust_level: {_trust_level_line(trust_level)}",
         f"- sentiment_ema: {_format_number(sentiment_ema)}",
         f"- voice_text_ratio: {_format_number(voice_text_ratio)}",
