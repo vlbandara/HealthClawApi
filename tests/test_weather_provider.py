@@ -6,7 +6,9 @@ import pytest
 from healthclaw.integrations.weather import NullWeatherProvider, OpenMeteoProvider, WeatherSnapshot
 
 
-def _snapshot(temp_c: float = 33, humidity: int = 82, uv: float = 9, wmo: int = 2) -> WeatherSnapshot:
+def _snapshot(
+    temp_c: float = 33, humidity: int = 82, uv: float = 9, wmo: int = 2
+) -> WeatherSnapshot:
     return WeatherSnapshot(
         lat=1.3, lon=103.8,
         temp_c=temp_c,
@@ -60,7 +62,6 @@ def test_to_dict_roundtrip():
 @pytest.mark.asyncio
 async def test_open_meteo_returns_cached_on_second_call(respx_mock):
     """Second identical call returns cached snapshot without HTTP."""
-    import respx
     import httpx
 
     provider = OpenMeteoProvider()

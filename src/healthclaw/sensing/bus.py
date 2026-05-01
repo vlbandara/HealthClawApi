@@ -38,7 +38,8 @@ class SignalBus:
         """Insert the signal if new. Returns (signal_id, is_new)."""
         from sqlalchemy import select
 
-        from healthclaw.db.models import Signal as SignalModel, new_id
+        from healthclaw.db.models import Signal as SignalModel
+        from healthclaw.db.models import new_id
 
         result = await self.session.execute(
             select(SignalModel).where(

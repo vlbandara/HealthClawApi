@@ -1,7 +1,6 @@
 """Tests for sensing/bus.py — signal publication and deduplication."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

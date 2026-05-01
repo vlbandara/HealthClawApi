@@ -236,7 +236,10 @@ class HeartbeatService:
                 message_seed=str(job.payload["message_seed"]),
                 rationale="afferent_signal_pre_deliberated",
                 model=None,
-                decision_input={"kind": "afferent_signal", "thought_id": job.payload.get("thought_id")},
+                decision_input={
+                    "kind": "afferent_signal",
+                    "thought_id": job.payload.get("thought_id"),
+                },
             )
 
         from healthclaw.heartbeat.decision import decide

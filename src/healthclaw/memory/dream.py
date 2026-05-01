@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -350,9 +351,10 @@ class DreamService:
         top_hours.sort()
 
         # Compute typical gap deviation (how irregular are their check-ins)
-        sorted_msgs = sorted(
-            messages, key=lambda m: m.created_at if m.created_at.tzinfo else m.created_at.replace(tzinfo=UTC)
-        )
+        def _ts(m: Any) -> Any:
+            return m.created_at if m.created_at.tzinfo else m.created_at.replace(tzinfo=UTC)
+
+        sorted_msgs = sorted(messages, key=_ts)
         gaps = []
         for i in range(1, len(sorted_msgs)):
             prev = sorted_msgs[i - 1].created_at

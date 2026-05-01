@@ -23,7 +23,9 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("home_lon", sa.Float(), nullable=True))
     op.add_column(
         "users",
-        sa.Column("chronotype", sa.String(length=16), nullable=False, server_default="intermediate"),
+        sa.Column(
+            "chronotype", sa.String(length=16), nullable=False, server_default="intermediate"
+        ),
     )
 
     op.create_table(

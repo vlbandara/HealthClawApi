@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from importlib.resources import files
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,11 +42,13 @@ async def run_inner_deliberation(thought_id: str, session: AsyncSession) -> dict
         time_ctx = build_time_context(user)
 
     # Build decision input reusing the wellbeing input builder
-    from healthclaw.agent.wellbeing import build_wellbeing_input, reflect_on_wellbeing
+    from datetime import UTC, datetime
+
     from sqlalchemy import select
+
+    from healthclaw.agent.wellbeing import build_wellbeing_input, reflect_on_wellbeing
     from healthclaw.db.models import Message, OpenLoop, UserEngagementState
     from healthclaw.engagement.metrics import build_relationship_context
-    from datetime import UTC, datetime
 
     now = datetime.now(UTC)
 

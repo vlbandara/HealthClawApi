@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,8 +43,8 @@ class SpeechGate:
     async def evaluate(
         self,
         thought: Thought,
-        user: "User",
-        time_ctx: "TimeContext",
+        user: User,
+        time_ctx: TimeContext,
         decision: WellbeingDecision,
     ) -> GateOutcome:
         async with start_span(
@@ -87,8 +87,8 @@ class SpeechGate:
     async def _hard_gate(
         self,
         thought: Thought,
-        user: "User",
-        time_ctx: "TimeContext",
+        user: User,
+        time_ctx: TimeContext,
     ) -> str | None:
         """Return a rejection reason string if the gate should block, else None."""
         now = datetime.now(UTC)
@@ -174,7 +174,7 @@ class SpeechGate:
         return False
 
     async def _create_heartbeat_job(
-        self, thought: Thought, user: "User", decision: WellbeingDecision
+        self, thought: Thought, user: User, decision: WellbeingDecision
     ) -> HeartbeatJob:
         from datetime import timedelta
 
@@ -184,9 +184,6 @@ class SpeechGate:
         delay = parse_delay_minutes(decision.when)
         due_at = now + timedelta(minutes=delay) if delay else now
 
-        dedup_key_suffix = "_".join(
-            k for k in (thought.salience_breakdown or {}) if not k.startswith("_")
-        )[:64]
         idempotency_key = (
             f"afferent:{user.id}:{thought.id}:{now.strftime('%Y-%m-%dT%H')}"
         )

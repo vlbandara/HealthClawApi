@@ -54,9 +54,15 @@ def part_of_day_for(local_time: time) -> str:
 
 # Typical wake/sleep windows per chronotype (local hours)
 _CHRONOTYPE_WINDOWS: dict[str, dict[str, int]] = {
-    "early":        {"wake": 5, "peak_start": 7, "peak_end": 11, "dip": 13, "wind_down": 19, "sleep": 21},
-    "intermediate": {"wake": 7, "peak_start": 9, "peak_end": 13, "dip": 14, "wind_down": 21, "sleep": 23},
-    "late":         {"wake": 9, "peak_start": 11, "peak_end": 15, "dip": 15, "wind_down": 23, "sleep": 1},
+    "early": {
+        "wake": 5, "peak_start": 7, "peak_end": 11, "dip": 13, "wind_down": 19, "sleep": 21,
+    },
+    "intermediate": {
+        "wake": 7, "peak_start": 9, "peak_end": 13, "dip": 14, "wind_down": 21, "sleep": 23,
+    },
+    "late": {
+        "wake": 9, "peak_start": 11, "peak_end": 15, "dip": 15, "wind_down": 23, "sleep": 1,
+    },
 }
 
 

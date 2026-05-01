@@ -77,7 +77,9 @@ async def test_gate_blocks_on_quiet_hours_low_salience():
     session = _make_empty_session()
     gate = SpeechGate(session)
     thought = _thought(salience=0.65)
-    outcome = await gate.evaluate(thought, _user(), _time_ctx(quiet_hours=True), _reach_out_decision())
+    outcome = await gate.evaluate(
+        thought, _user(), _time_ctx(quiet_hours=True), _reach_out_decision()
+    )
     assert outcome.emit is False
     assert "quiet_hours" in outcome.rationale
 
@@ -91,7 +93,9 @@ async def test_gate_allows_high_salience_during_quiet_hours():
     with patch.object(SpeechGate, "_create_heartbeat_job", new=AsyncMock(return_value=job_mock)):
         gate = SpeechGate(session)
         thought = _thought(salience=0.9)  # above 0.85 override
-        outcome = await gate.evaluate(thought, _user(), _time_ctx(quiet_hours=True), _reach_out_decision())
+        outcome = await gate.evaluate(
+            thought, _user(), _time_ctx(quiet_hours=True), _reach_out_decision()
+        )
 
     assert outcome.emit is True
 

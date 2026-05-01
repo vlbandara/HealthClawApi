@@ -6,8 +6,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from healthclaw.core.config import get_settings
-from healthclaw.core.tracing import new_trace_id, start_span
+from healthclaw.core.tracing import new_trace_id
 from healthclaw.db.models import HeartbeatEvent, ProactiveEvent, Thought, User
 from healthclaw.inner.salience import compute_salience
 from healthclaw.sensing.bus import SignalBus
@@ -26,7 +25,6 @@ async def run_inner_tick(user_id: str, session: AsyncSession) -> dict:
 
     Returns a summary dict for the cron log.
     """
-    settings = get_settings()
     now = datetime.now(UTC)
 
     user = await session.get(User, user_id)

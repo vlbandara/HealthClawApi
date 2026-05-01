@@ -1,7 +1,7 @@
 """Tests for Dream._learn_engagement_rhythm — statistical rhythm extraction."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

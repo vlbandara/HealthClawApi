@@ -7,7 +7,6 @@ from healthclaw.agent.time_context import (
     build_time_context,
     circadian_phase_for,
     day_arc_for,
-    part_of_day_for,
 )
 from healthclaw.db.models import User
 
@@ -77,7 +76,6 @@ def test_build_time_context_populates_circadian_phase() -> None:
 
 
 def test_build_time_context_includes_calendar_events() -> None:
-    from types import SimpleNamespace
 
     user = _user()
     now = datetime(2026, 5, 1, 6, 0, tzinfo=UTC)

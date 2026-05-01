@@ -27,7 +27,10 @@ async def poll_weather_for_user(user: User, session: AsyncSession) -> bool:
     # dedup_key includes temperature bucket to avoid re-ticking on identical conditions
     temp_bucket = round(snapshot.temp_c / 2) * 2  # 2°C granularity
     now = datetime.now(UTC)
-    dedup_key = f"weather:{user.id}:{now.strftime('%Y-%m-%dT%H')}:t{temp_bucket}:h{snapshot.humidity_pct // 10}"
+    humidity_bucket = snapshot.humidity_pct // 10
+    dedup_key = (
+        f"weather:{user.id}:{now.strftime('%Y-%m-%dT%H')}:t{temp_bucket}:h{humidity_bucket}"
+    )
 
     signal = Signal(
         kind="weather",

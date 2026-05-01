@@ -36,7 +36,6 @@ def compute_salience(
     suitable for persisting in the thoughts.salience_breakdown column.
     """
     raw: dict[str, float] = {}
-    score = 0.0
 
     for sig in signals:
         kind = str(sig.kind)
