@@ -10,10 +10,12 @@ from healthclaw.workers.tasks import (
     dream_sweep_cron,
     embed_memory_batch,
     heartbeat_sweep_cron,
+    inner_tick_cron,
     process_due_heartbeats_task,
     process_due_reminders_task,
     run_consolidator_for_user,
     run_dream_for_user,
+    sensing_poll_cron,
 )
 
 
@@ -62,6 +64,8 @@ class WorkerSettings:
     cron_jobs = [
         cron(heartbeat_sweep_cron, second={0}, run_at_startup=False),
         cron(autonomous_wake_sweep, minute={0, 15, 30, 45}, second={0}, run_at_startup=False),
+        cron(sensing_poll_cron, minute={0, 10, 20, 30, 40, 50}, second={0}, run_at_startup=False),
+        cron(inner_tick_cron, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, second={0}, run_at_startup=False),
         cron(consolidator_sweep_cron, hour={4}, minute={0}, second={0}),
         cron(dream_sweep_cron, hour={4}, minute={15}, second={0}),
     ]

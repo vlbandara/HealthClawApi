@@ -97,6 +97,7 @@ class DreamService:
                     for message in messages[-30:]
                 ],
             )
+            await self._learn_engagement_rhythm(user)
             run.status = "completed"
             run.completed_at = utc_now()
             await self.session.flush()
@@ -303,6 +304,87 @@ class DreamService:
             default=engagement.trust_level,
         )
         return previous, True
+
+    async def _learn_engagement_rhythm(self, user: User) -> None:
+        """Bucket the last 30 days of user-sent messages by local hour and write a rhythm Memory.
+
+        This is a pure statistical pass — no LLM. The result is stored as
+        Memory(kind="rhythm", key="engagement_pattern") and injected into TimeContext
+        by build_time_context when available.
+        """
+        from collections import Counter
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+
+        cutoff = utc_now() - timedelta(days=30)
+        result = await self.session.execute(
+            select(Message).where(
+                Message.user_id == user.id,
+                Message.role == "user",
+                Message.created_at >= cutoff,
+            )
+        )
+        messages = list(result.scalars())
+        if len(messages) < 10:
+            return
+
+        try:
+            tz = ZoneInfo(user.timezone)
+        except Exception:
+            return
+
+        hour_counts: Counter[int] = Counter()
+        for msg in messages:
+            ts = msg.created_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            local_hour = ts.astimezone(tz).hour
+            hour_counts[local_hour] += 1
+
+        total = sum(hour_counts.values())
+        if total == 0:
+            return
+
+        # Top-3 engagement hours
+        top_hours = [h for h, _ in hour_counts.most_common(3)]
+        top_hours.sort()
+
+        # Compute typical gap deviation (how irregular are their check-ins)
+        sorted_msgs = sorted(
+            messages, key=lambda m: m.created_at if m.created_at.tzinfo else m.created_at.replace(tzinfo=UTC)
+        )
+        gaps = []
+        for i in range(1, len(sorted_msgs)):
+            prev = sorted_msgs[i - 1].created_at
+            curr = sorted_msgs[i].created_at
+            if prev.tzinfo is None:
+                prev = prev.replace(tzinfo=UTC)
+            if curr.tzinfo is None:
+                curr = curr.replace(tzinfo=UTC)
+            gap_min = int((curr - prev).total_seconds() / 60)
+            if gap_min < 1440:  # only gaps within a day
+                gaps.append(gap_min)
+        deviation_min = int(sum(gaps) / len(gaps)) if gaps else 0
+
+        rhythm_value = {
+            "typical_engage_hours": top_hours,
+            "deviation_from_pattern_min": deviation_min,
+            "sample_size": total,
+            "computed_at": utc_now().isoformat(),
+        }
+
+        mutation = MemoryMutation(
+            kind="rhythm",  # type: ignore[arg-type]
+            key="engagement_pattern",
+            value=rhythm_value,
+            confidence=0.7,
+            reason="Learned from 30-day message history during Dream.",
+            visibility="internal",
+            user_editable=False,
+            metadata={"source": "dream_rhythm"},
+        )
+        await self.memory_service.upsert_memory(user.id, mutation, [])
+        logger.debug("Rhythm memory written for user %s: %s", user.id, top_hours)
 
     async def _recent_messages(
         self,

@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     use_arq_worker: bool = False
     thread_summary_compact_every: int = 6
     thread_summary_max_chars: int = 1200
+    # WS5: inner tick
+    inner_salience_threshold: float = 0.6
+    sensing_poll_interval_minutes: int = 10
+    inner_tick_interval_minutes: int = 5
 
     @property
     def is_production(self) -> bool:
