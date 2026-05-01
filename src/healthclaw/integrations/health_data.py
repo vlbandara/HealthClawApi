@@ -6,7 +6,7 @@ from typing import Any
 
 
 class HealthDataProvider(ABC):
-    """Future integration boundary for Open Wearables and healthcare applications."""
+    """Integration boundary for Open Wearables and healthcare applications."""
 
     @abstractmethod
     async def get_sleep_summary(self, user_id: str, start: date, end: date) -> dict[str, Any]:
@@ -15,6 +15,14 @@ class HealthDataProvider(ABC):
     @abstractmethod
     async def get_recovery_summary(self, user_id: str, start: date, end: date) -> dict[str, Any]:
         raise NotImplementedError
+
+    async def get_latest_recovery(self, user_id: str) -> dict[str, Any]:
+        """Convenience: return the most recent recovery snapshot without requiring date math."""
+        from datetime import UTC, datetime, timedelta
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        return await self.get_recovery_summary(user_id, yesterday, today)
 
 
 class NullHealthDataProvider(HealthDataProvider):

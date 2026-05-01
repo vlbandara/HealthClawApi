@@ -224,7 +224,24 @@ class HeartbeatService:
         user: User,
         now: datetime,
     ) -> WellbeingDecision:
-        """Reflection-driven outbound decision for a heartbeat job."""
+        """Reflection-driven outbound decision for a heartbeat job.
+
+        For afferent_signal jobs the speech gate already ran a full deliberation + wellbeing
+        reflection and embedded the message_seed. Pass it through without a second LLM call.
+        """
+        if job.kind == "afferent_signal" and job.payload.get("message_seed"):
+            return WellbeingDecision(
+                reach_out=True,
+                when="now",
+                message_seed=str(job.payload["message_seed"]),
+                rationale="afferent_signal_pre_deliberated",
+                model=None,
+                decision_input={
+                    "kind": "afferent_signal",
+                    "thought_id": job.payload.get("thought_id"),
+                },
+            )
+
         from healthclaw.heartbeat.decision import decide
 
         time_context = build_time_context(user, now=now)
@@ -301,6 +318,15 @@ class HeartbeatService:
             if action_override:
                 return action_override
             return str(job.payload.get("prompt_template") or "How are you doing today?")
+
+        # Afferent signal: the speech gate already produced a message_seed in the payload
+        if job.kind == "afferent_signal":
+            seed = str(job.payload.get("message_seed") or "")
+            if seed:
+                return seed
+            # Fallback: render a summary of the signal
+            summary = str(job.payload.get("summary") or "something caught my attention")
+            return summary
 
         if job.kind == "memory_refresh":
             memory = None

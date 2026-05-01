@@ -108,6 +108,68 @@ async def dream_sweep_cron(ctx: dict) -> dict:
     return result
 
 
+async def sensing_poll_cron(ctx: dict) -> dict:
+    """Every 10 min: poll weather/calendar/wearables and publish signals to the bus."""
+    try:
+        from healthclaw.db.session import SessionLocal
+        from healthclaw.sensing.poller import run_sensing_poll
+
+        async with SessionLocal() as session:
+            result = await run_sensing_poll(session)
+        logger.info("sensing_poll_cron completed: %s", result)
+        return result
+    except Exception as exc:
+        logger.error("sensing_poll_cron failed: %s", exc)
+        return {"error": str(exc)}
+
+
+async def inner_tick_cron(ctx: dict) -> dict:
+    """Every 5 min: run inner cognitive tick for users with fresh signals."""
+    try:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from healthclaw.db.models import Signal, User
+        from healthclaw.db.session import SessionLocal
+        from healthclaw.inner.tick import run_inner_tick
+
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(minutes=15)
+
+        async with SessionLocal() as session:
+            # Only tick users who have fresh signals — avoids scanning everyone
+            result = await session.execute(
+                select(User.id).where(
+                    User.proactive_enabled.is_(True),
+                ).join(Signal, Signal.user_id == User.id).where(
+                    Signal.observed_at >= cutoff,
+                ).distinct()
+            )
+            user_ids = [row[0] for row in result.all()]
+
+        ticked = 0
+        deliberated = 0
+        for user_id in user_ids:
+            try:
+                async with SessionLocal() as session:
+                    outcome = await run_inner_tick(user_id, session)
+                    await session.commit()
+                    if outcome.get("status") == "ticked":
+                        ticked += 1
+                    if outcome.get("deliberation"):
+                        deliberated += 1
+            except Exception as exc:
+                logger.warning("inner_tick failed for user %s: %s", user_id, exc)
+
+        result_summary = {"users_ticked": ticked, "deliberations": deliberated}
+        logger.info("inner_tick_cron completed: %s", result_summary)
+        return result_summary
+    except Exception as exc:
+        logger.error("inner_tick_cron failed: %s", exc)
+        return {"error": str(exc)}
+
+
 async def autonomous_wake_sweep(ctx: dict) -> dict:
     """Every 15 minutes: create autonomous heartbeat candidates, then process due jobs."""
     try:

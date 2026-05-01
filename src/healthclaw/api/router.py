@@ -6,6 +6,7 @@ from healthclaw.api.routes import (
     audit,
     conversations,
     health,
+    integrations,
     owner,
     reminders,
     users,
@@ -22,3 +23,4 @@ api_router.include_router(audit.router)
 api_router.include_router(owner.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(websocket.router)
+api_router.include_router(integrations.router)

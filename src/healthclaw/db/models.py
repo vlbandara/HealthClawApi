@@ -39,6 +39,10 @@ class User(Base):
     quiet_end: Mapped[str] = mapped_column(String(5))
     onboarding_status: Mapped[str] = mapped_column(String(32), default="new")
     consent_version: Mapped[str] = mapped_column(String(32), default="wellness-v1")
+    # WS5: location + chronotype for afferent sensing
+    home_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    home_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    chronotype: Mapped[str] = mapped_column(String(16), default="intermediate")
     locale: Mapped[str] = mapped_column(String(16), default="en")
     notification_channel: Mapped[str] = mapped_column(String(32), default="telegram")
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -540,3 +544,81 @@ class UserMemoryCursor(Base):
     embedding_cursor_memory_id: Mapped[str | None] = mapped_column(
         ForeignKey("memories.id"), nullable=True
     )
+
+
+# ── WS5: Afferent sensing layer ────────────────────────────────────────────
+
+
+class UserLocation(Base):
+    """Named locations for a user (home, work, travel). home_lat/lon on User is denorm fast-path."""
+
+    __tablename__ = "user_locations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    lat: Mapped[float] = mapped_column(Float)
+    lon: Mapped[float] = mapped_column(Float)
+    label: Mapped[str] = mapped_column(String(64), default="home")
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class IntegrationCredential(Base):
+    """OAuth tokens and provider credentials, stored encrypted."""
+
+    __tablename__ = "integration_credentials"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_integration_credential_user_provider"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    encrypted_payload: Mapped[bytes | None] = mapped_column(
+        type_=String(8192).with_variant(String(8192), "postgresql"), nullable=True
+    )
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class Signal(Base):
+    """An afferent perception event (weather, calendar, wearable, location).
+    Deduplicated via dedup_key to avoid re-ticking on unchanged data."""
+
+    __tablename__ = "signals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    value: Mapped[dict[str, Any]] = mapped_column(JSON)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(32))
+    dedup_key: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class Thought(Base):
+    """Inner cognitive stream entry — not shown to user, auditable via admin/OTel."""
+
+    __tablename__ = "thoughts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    mode: Mapped[str] = mapped_column(String(24), default="passive")
+    content_summary: Mapped[str] = mapped_column(Text, default="")
+    salience: Mapped[float] = mapped_column(Float, default=0.0)
+    salience_breakdown: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    signal_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    time_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    became_utterance: Mapped[bool] = mapped_column(Boolean, default=False)
+    heartbeat_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("heartbeat_jobs.id"), nullable=True
+    )
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -61,7 +61,17 @@ async def assemble_signals(state: AgentState) -> AgentState:
 @traced_node("time_context")
 async def assemble_time_context(state: AgentState) -> AgentState:
     thread_last = state.get("trace_metadata", {}).get("last_interaction_at")
-    context = build_time_context(state["user"], last_interaction_at=thread_last)
+
+    # WS5: inject calendar events and rhythm memory when available in state
+    calendar_events = state.get("calendar_events")
+    rhythm_memory = state.get("rhythm_memory")
+
+    context = build_time_context(
+        state["user"],
+        last_interaction_at=thread_last,
+        calendar_events=calendar_events,
+        rhythm_memory=rhythm_memory,
+    )
     state["time_context"] = context.to_dict()
     state["trace_metadata"] = {
         **state.get("trace_metadata", {}),
