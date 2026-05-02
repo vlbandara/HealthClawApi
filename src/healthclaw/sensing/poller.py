@@ -124,7 +124,7 @@ async def poll_hydration_for_user(user: User, session: AsyncSession) -> bool:
 
     This is the end-to-end demo of the "hot in Singapore → drink water" nudge.
     """
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from sqlalchemy import select
 

@@ -1,8 +1,6 @@
 """Tests for token budget (Workstream F)."""
 from __future__ import annotations
 
-import pytest
-
 from healthclaw.agent.token_budget import TokenBudget, _first_sentence, count_tokens
 
 

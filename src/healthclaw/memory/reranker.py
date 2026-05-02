@@ -51,7 +51,7 @@ class RerankerClient:
                 self._cohere_rerank(query, memories, top_n=top_n),
                 timeout=self.timeout_s,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Reranker timed out after %.1fs — falling back to hybrid order",
                 self.timeout_s,

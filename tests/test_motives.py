@@ -1,8 +1,9 @@
 """Tests for the motive layer (Workstream A)."""
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from healthclaw.inner.motives import (
     DEFAULT_MOTIVES,

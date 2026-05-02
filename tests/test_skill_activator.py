@@ -1,14 +1,12 @@
 """Tests for LLM skill activator (Workstream D)."""
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from healthclaw.agent.skills import ALL_SKILLS, get_enabled_skills
 from healthclaw.agent.skills.sleep import SleepSkill
-from healthclaw.agent.skills.nutrition import NutritionSkill
 
 
 def _mock_settings(**overrides):
@@ -18,8 +16,12 @@ def _mock_settings(**overrides):
     s.health_skill_sleep_enabled = overrides.get("health_skill_sleep_enabled", False)
     s.health_skill_nutrition_enabled = overrides.get("health_skill_nutrition_enabled", False)
     s.health_skill_movement_enabled = overrides.get("health_skill_movement_enabled", False)
-    s.health_skill_mental_health_enabled = overrides.get("health_skill_mental_health_enabled", False)
-    s.health_skill_medication_adherence_enabled = overrides.get("health_skill_medication_adherence_enabled", False)
+    s.health_skill_mental_health_enabled = overrides.get(
+        "health_skill_mental_health_enabled", False
+    )
+    s.health_skill_medication_adherence_enabled = overrides.get(
+        "health_skill_medication_adherence_enabled", False
+    )
     return s
 
 

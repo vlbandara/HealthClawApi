@@ -161,7 +161,8 @@ async def generate_companion_response(
         for skill in active_skills:
             module_text = load_prompt_module(skill.prompt_module_path)
             if module_text:
-                skill_sections.append(f"## {skill.name.replace('_', ' ').title()} Skill\n\n{module_text}")
+                heading = f"## {skill.name.replace('_', ' ').title()} Skill"
+                skill_sections.append(f"{heading}\n\n{module_text}")
         if skill_sections:
             skill_block = "\n\n# Active Health Skills\n\n" + "\n\n---\n\n".join(skill_sections)
 
@@ -171,8 +172,14 @@ async def generate_companion_response(
     if web_search_results:
         lines = []
         for i, src in enumerate(web_search_results[:5], 1):
-            lines.append(f"[{i}] {src.get('title', '')} — {src.get('snippet', '')[:200]} ({src.get('url', '')})")
-        web_sources_block = "\n\n# Web Sources\n\nUse inline [n] markers when citing these sources.\n\n" + "\n".join(lines)
+            title = src.get("title", "")
+            snippet = src.get("snippet", "")[:200]
+            url = src.get("url", "")
+            lines.append(f"[{i}] {title} — {snippet} ({url})")
+        web_sources_block = (
+            "\n\n# Web Sources\n\nUse inline [n] markers when citing these sources.\n\n"
+            + "\n".join(lines)
+        )
 
     messages = [
         {

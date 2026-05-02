@@ -24,7 +24,8 @@ ACTIVATOR_SYSTEM_PROMPT_TEMPLATE = """\
 You are a health-skill router for a wellness companion.
 
 Given a user message and context, decide which health skill lenses (if any) are relevant.
-Return ONLY valid JSON with key "activated" containing a list of objects each having "name" and "reason" keys.
+Return ONLY valid JSON with key "activated" containing a list of objects
+each having "name" and "reason" keys.
 Example output: {{"activated": [{{"name": "sleep", "reason": "user mentioned insomnia"}}]}}
 
 Available skills:

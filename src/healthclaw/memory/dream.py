@@ -52,7 +52,8 @@ These patterns are internal to the agent — they improve how it times and phras
 They must NEVER be shown to the user verbatim.
 
 Return ONLY valid JSON with a top-level "patterns" array. Each entry:
-{"kind":"user_pattern","key":"<domain>","value":{...facts...},"confidence":0.0-1.0,"reason":"<1 sentence>"}
+{"kind":"user_pattern","key":"<domain>","value":{...facts...},
+ "confidence":0.0-1.0,"reason":"<1 sentence>"}
 
 Allowed domains: hydration, sleep, movement, mood, medication, engagement_rhythm, social.
 
@@ -388,8 +389,8 @@ class DreamService:
 
     async def _seed_motives_if_missing(self, user: User) -> None:
         """Ensure default motives exist for this user (idempotent)."""
-        from healthclaw.inner.motives import MotiveService
         from healthclaw.core.config import get_settings
+        from healthclaw.inner.motives import MotiveService
 
         settings = get_settings()
         if not settings.motives_enabled:

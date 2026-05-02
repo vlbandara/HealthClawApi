@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from healthclaw.inner.salience import SalienceResult, compute_salience
+from healthclaw.inner.salience import compute_salience
 
 
 def _sig(kind: str, value: dict) -> MagicMock:

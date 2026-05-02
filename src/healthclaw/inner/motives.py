@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC
 from typing import Any
 
 from sqlalchemy import select
@@ -34,7 +34,9 @@ DEFAULT_MOTIVES = [
 # Maps motive name → signal kinds it amplifies
 MOTIVE_SIGNAL_MAP: dict[str, set[str]] = {
     "hydration":           {"weather_heat_stress", "weather_high_uv", "hydration_need"},
-    "sleep_protection":    {"wearable_poor_sleep", "wearable_low_recovery", "out_of_circadian_window"},
+    "sleep_protection": {
+        "wearable_poor_sleep", "wearable_low_recovery", "out_of_circadian_window"
+    },
     "movement":            {"wearable_low_recovery", "movement_gap"},
     "mood_stability":      {"long_lapse", "calendar_imminent_event"},
     "medication_adherence":{"medication_due"},

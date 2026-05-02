@@ -55,7 +55,11 @@ async def test_search_uses_health_domains_when_clinical() -> None:
         resp = MagicMock()
         resp.raise_for_status = MagicMock()
         resp.json = MagicMock(return_value={"results": [
-            {"title": "Study", "url": "https://pubmed.ncbi.nlm.nih.gov/1", "content": "Magnesium helps sleep."}
+            {
+                "title": "Study",
+                "url": "https://pubmed.ncbi.nlm.nih.gov/1",
+                "content": "Magnesium helps sleep.",
+            }
         ]})
         return resp
 

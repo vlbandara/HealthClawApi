@@ -7,6 +7,7 @@ Create Date: 2026-05-02
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0012_ws6_motives_metrics_audit"

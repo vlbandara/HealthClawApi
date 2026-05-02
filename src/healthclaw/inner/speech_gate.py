@@ -198,7 +198,9 @@ class SpeechGate:
         ):
             # Crisis escalation always bypasses hard gate
             if intent.safety_category == "crisis_escalated":
-                job = await self._create_heartbeat_job_from_intent(thought, user, intent, delay_minutes=0)
+                job = await self._create_heartbeat_job_from_intent(
+                    thought, user, intent, delay_minutes=0
+                )
                 thought.became_utterance = True
                 thought.heartbeat_job_id = job.id
                 await self.session.flush()
@@ -261,7 +263,9 @@ class SpeechGate:
                     thought_id=thought.id,
                 )
 
-            job = await self._create_heartbeat_job_from_intent(thought, user, intent, delay_minutes=0)
+            job = await self._create_heartbeat_job_from_intent(
+                thought, user, intent, delay_minutes=0
+            )
             thought.became_utterance = True
             thought.heartbeat_job_id = job.id
             await self.session.flush()

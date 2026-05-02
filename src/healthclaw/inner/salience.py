@@ -28,7 +28,7 @@ def compute_salience(
     outbound_in_cooldown: bool = False,
     quiet_hours: bool | None = None,
     already_deliberated_today: bool = False,
-    motives: list["Motive"] | None = None,
+    motives: list[Motive] | None = None,
 ) -> SalienceResult:
     """Pure-Python salience scoring — no LLM, no I/O.
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from healthclaw.agent.skills.base import load_prompt_module, skill_prompt_path
+from healthclaw.agent.skills.base import skill_prompt_path
 from healthclaw.schemas.actions import Action, ScheduleProtocolPayload
 
 

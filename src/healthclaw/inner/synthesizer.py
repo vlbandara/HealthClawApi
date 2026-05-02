@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.core.config import get_settings
 from healthclaw.core.tracing import start_span
-from healthclaw.db.models import Memory, Message, OpenLoop, User, UserEngagementState
+from healthclaw.db.models import Memory, Message, OpenLoop, User
 from healthclaw.schemas.intents import InnerIntent
 
 logger = logging.getLogger(__name__)
