@@ -21,7 +21,8 @@ class GenerationResult:
 
 ACTION_OUTPUT_CONTRACT = (
     "Output a single JSON object with exactly these keys: "
-    '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation]}. '
+    '{"message": str, "actions": [Action], "memory_proposals": [MemoryMutation], '
+    '"safety_category": "normal"|"distress"|"crisis_escalated"}. '
     'Each action must use {"type": str, "payload": {...}, "rationale": str | null}. '
     "Known capabilities right now:\n"
     "  create_reminder: "
@@ -33,7 +34,19 @@ ACTION_OUTPUT_CONTRACT = (
     "  close_open_loop: "
     '{"type":"close_open_loop","payload":{"id":"<exact id>","summary":"<one line>",'
     '"outcome":"completed"|"dropped"|"reframed"},"rationale":"<why>"}\n'
+    "  log_metric: "
+    '{"type":"log_metric","payload":{"metric":"sleep_hours"|"mood_1_5"|"steps"|"water_ml"|"weight_kg",'
+    '"value":0.0,"observed_at_iso":"<ISO 8601>","note":null},"rationale":"<why>"}\n'
+    "  schedule_protocol: "
+    '{"type":"schedule_protocol","payload":{"title":"<title>",'
+    '"kind":"sleep_protocol"|"nutrition_pattern"|"movement_routine"|"medication_schedule",'
+    '"cadence":"daily"|"weekly"|"weekdays","time_local":"HH:MM"},"rationale":"<why>"}\n'
+    "  web_search: "
+    '{"type":"web_search","payload":{"query":"<search query>","health_clinical":false},'
+    '"rationale":"<why I need fresh info>"}\n'
     '  none: {"type":"none","payload":{},"rationale":null}\n'
+    "safety_category: Set to 'crisis_escalated' when you sense serious distress or crisis. "
+    "When crisis_escalated, include crisis support resource in message and emit no other actions.\n"
     "If you want a capability that does not exist yet, "
     "still propose it with a clear type and payload. "
     "Only say you set, scheduled, or created something "
@@ -91,6 +104,9 @@ async def generate_companion_response(
     observable_signals: dict[str, object] | None = None,
     thread_summary: str | None = None,
     relationship_signals: list[str] | None = None,
+    active_skills: list[object] | None = None,
+    web_search_results: list[dict[str, object]] | None = None,
+    motives: list[dict[str, object]] | None = None,
 ) -> tuple[GenerationResult, dict[str, object]]:
     user_context = user_context or {}
     observable_signals = observable_signals or {}
@@ -136,6 +152,28 @@ async def generate_companion_response(
         "local_time": time_context.to_dict(),
     }
 
+    # Build skill prompt block
+    active_skills = active_skills or []
+    skill_block = ""
+    if active_skills:
+        from healthclaw.agent.skills.base import load_prompt_module
+        skill_sections = []
+        for skill in active_skills:
+            module_text = load_prompt_module(skill.prompt_module_path)
+            if module_text:
+                skill_sections.append(f"## {skill.name.replace('_', ' ').title()} Skill\n\n{module_text}")
+        if skill_sections:
+            skill_block = "\n\n# Active Health Skills\n\n" + "\n\n---\n\n".join(skill_sections)
+
+    # Build web sources block
+    web_search_results = web_search_results or []
+    web_sources_block = ""
+    if web_search_results:
+        lines = []
+        for i, src in enumerate(web_search_results[:5], 1):
+            lines.append(f"[{i}] {src.get('title', '')} — {src.get('snippet', '')[:200]} ({src.get('url', '')})")
+        web_sources_block = "\n\n# Web Sources\n\nUse inline [n] markers when citing these sources.\n\n" + "\n".join(lines)
+
     messages = [
         {
             "role": "system",
@@ -156,6 +194,8 @@ async def generate_companion_response(
                 open_loops=open_loops,
                 safety_category="model_managed",
             )
+            + skill_block
+            + web_sources_block
             + "\n\n# Action Output Contract\n\n"
             + ACTION_OUTPUT_CONTRACT,
         },

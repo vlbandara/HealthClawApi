@@ -67,6 +67,51 @@ class Settings(BaseSettings):
     sensing_poll_interval_minutes: int = 10
     inner_tick_interval_minutes: int = 5
 
+    # WS6: memory / context optimization
+    max_context_tokens: int = 16000
+    context_token_reserve_system: int = 2500
+    context_token_reserve_output: int = 1500
+    reranker_provider: str = "none"          # "cohere" | "none"
+    reranker_model: str = "rerank-v3.5"
+    cohere_api_key: str | None = None
+    rerank_top_k_multiplier: int = 3
+    reranker_timeout_ms: int = 400
+
+    # WS6: motives & self-model
+    motives_enabled: bool = False
+    motive_decay_half_life_days: int = 21
+    motive_seed_weight: float = 0.3
+
+    # WS6: inner synthesizer / anticipation
+    inner_synthesizer_enabled: bool = False
+    inner_synth_model: str = "moonshotai/kimi-k2.6"
+    inner_synth_max_tokens: int = 400
+    inner_synth_temperature: float = 0.6
+    anticipation_enabled: bool = False
+    hydration_poller_enabled: bool = False
+
+    # WS6: health skills (LLM-activated)
+    health_skills_enabled: bool = False
+    health_skill_max_active: int = 2
+    skill_activator_model: str = "google/gemini-2.5-flash-lite"
+    skill_activator_max_tokens: int = 120
+    health_skill_sleep_enabled: bool = False
+    health_skill_nutrition_enabled: bool = False
+    health_skill_movement_enabled: bool = False
+    health_skill_mental_health_enabled: bool = False
+    health_skill_medication_adherence_enabled: bool = False
+
+    # WS6: crisis / safety
+    crisis_hotline_default: str = "988"
+    crisis_hotline_locale_map: str = '{"GB":"116123","AU":"131114","LK":"1926","SG":"1767"}'
+
+    # WS6: web search (Tavily)
+    tavily_api_key: str | None = None
+    tavily_search_timeout_ms: int = 4000
+    web_search_enabled: bool = False
+    web_search_cache_ttl_seconds: int = 900
+    web_search_health_domains_only: bool = True
+
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"

@@ -41,6 +41,19 @@ async def run_inner_tick(user_id: str, session: AsyncSession) -> dict:
     time_ctx = build_time_context(user, now=now)
     time_ctx_dict = time_ctx.to_dict()
 
+    # WS6: populate anticipation fields (calendar events, day-arc, rhythm)
+    from healthclaw.core.config import get_settings
+    settings = get_settings()
+    if settings.anticipation_enabled:
+        from healthclaw.agent.anticipation import populate_anticipation
+        time_ctx_dict = await populate_anticipation(user, time_ctx_dict, session)
+
+    # WS6: load motives for motive-weighted salience
+    motives = []
+    if settings.motives_enabled:
+        from healthclaw.inner.motives import MotiveService
+        motives = await MotiveService(session).get_active_motives(user_id)
+
     outbound_in_cooldown = await _outbound_in_cooldown(user, now, session)
     already_deliberated_today = await _deliberated_today(user_id, signals, session)
 
@@ -50,6 +63,7 @@ async def run_inner_tick(user_id: str, session: AsyncSession) -> dict:
         outbound_in_cooldown=outbound_in_cooldown,
         quiet_hours=time_ctx.quiet_hours,
         already_deliberated_today=already_deliberated_today,
+        motives=motives,
     )
 
     signal_summary = _summarize_signals(signals, time_ctx_dict)
@@ -77,14 +91,50 @@ async def run_inner_tick(user_id: str, session: AsyncSession) -> dict:
     }
 
     if salience.above_threshold:
-        from healthclaw.inner.deliberation import run_inner_deliberation
+        # WS6: route to synthesizer when enabled, else fall back to legacy deliberation
+        if settings.inner_synthesizer_enabled:
+            from healthclaw.inner.synthesizer import InnerSynthesizer
 
-        try:
-            deliberation_result = await run_inner_deliberation(thought.id, session)
-            result["deliberation"] = deliberation_result
-        except Exception as exc:
-            logger.warning("Deliberation failed for thought %s: %s", thought.id, exc)
-            result["deliberation_error"] = str(exc)
+            try:
+                synthesizer = InnerSynthesizer(session)
+                intent = await synthesizer.synthesize(
+                    thought.id, user, signals, motives, time_ctx_dict
+                )
+                # Store intent fields on Thought for audit
+                thought.intent_kind = intent.kind
+                thought.intent_motive = intent.motive or None
+                if intent.discarded:
+                    thought.discarded_reason = intent.discarded_reason
+                await session.flush()
+
+                if intent.kind in {"reflect_silently", "wait"} or intent.discarded:
+                    result["intent"] = intent.kind
+                    result["status"] = "reflected_silently"
+                elif intent.kind == "investigate" and intent.needs_web_search:
+                    # Tavily search deferred to speech gate / heartbeat executor
+                    result["intent"] = "investigate"
+                    result["web_search_query"] = intent.web_search_query
+                else:
+                    # Route through upgraded speech gate with InnerIntent
+                    from healthclaw.inner.speech_gate import SpeechGate
+                    gate = SpeechGate(session)
+                    outcome = await gate.evaluate_intent(thought, user, time_ctx, intent)
+                    result["intent"] = intent.kind
+                    result["status"] = "gate_evaluated"
+                    result["emit"] = outcome.emit
+                    result["rationale"] = outcome.rationale
+            except Exception as exc:
+                logger.warning("Synthesizer failed for thought %s: %s", thought.id, exc)
+                result["synthesizer_error"] = str(exc)
+        else:
+            # Legacy deliberation path
+            from healthclaw.inner.deliberation import run_inner_deliberation
+            try:
+                deliberation_result = await run_inner_deliberation(thought.id, session)
+                result["deliberation"] = deliberation_result
+            except Exception as exc:
+                logger.warning("Deliberation failed for thought %s: %s", thought.id, exc)
+                result["deliberation_error"] = str(exc)
 
     return result
 

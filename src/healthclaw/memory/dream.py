@@ -44,6 +44,29 @@ Return ONLY valid JSON with a top-level "changes" array. Each change must be one
 
 Prefer no change unless evidence is clear."""
 
+PATTERN_EXTRACTION_PROMPT = """\
+You are Healthclaw's self-model builder. Analyse the user's recent messages, signals, and
+outcome logs to update lightweight behavioral patterns the agent holds about this user.
+
+These patterns are internal to the agent — they improve how it times and phrases nudges.
+They must NEVER be shown to the user verbatim.
+
+Return ONLY valid JSON with a top-level "patterns" array. Each entry:
+{"kind":"user_pattern","key":"<domain>","value":{...facts...},"confidence":0.0-1.0,"reason":"<1 sentence>"}
+
+Allowed domains: hydration, sleep, movement, mood, medication, engagement_rhythm, social.
+
+For engagement_rhythm include:
+  best_response_window: "morning"|"afternoon"|"evening"|"night"
+  avg_reply_lag_min: <int>
+  worst_response_window: "..."
+
+For hydration:
+  baseline_daily_water: <cups/glasses estimate>
+  heat_sensitivity: "reactive"|"unaware"|"proactive"
+
+Emit an empty array if there is insufficient evidence. Prefer conservatism."""
+
 
 class DreamService:
     def __init__(
@@ -99,6 +122,8 @@ class DreamService:
                 ],
             )
             await self._learn_engagement_rhythm(user)
+            await self._extract_user_patterns(user, messages)
+            await self._seed_motives_if_missing(user)
             run.status = "completed"
             run.completed_at = utc_now()
             await self.session.flush()
@@ -305,6 +330,74 @@ class DreamService:
             default=engagement.trust_level,
         )
         return previous, True
+
+    async def _extract_user_patterns(self, user: User, messages: list[Message]) -> None:
+        """LLM-powered pass: update user_pattern:* Memory rows from recent messages."""
+        from healthclaw.integrations.openrouter import OpenRouterClient
+
+        client = OpenRouterClient(self.settings)
+        if not client.enabled or not messages:
+            return
+        sample = [
+            {"role": m.role, "content": m.content[:400]}
+            for m in messages[-60:]
+        ]
+        try:
+            result = await client.chat_completion(
+                messages=[
+                    {"role": "system", "content": PATTERN_EXTRACTION_PROMPT},
+                    {"role": "user", "content": json.dumps({"recent_messages": sample})},
+                ],
+                max_tokens=600,
+                temperature=0.1,
+                model=self.settings.openrouter_dream_model,
+                metadata={"model_role": "pattern_extraction", "user_id": user.id},
+            )
+            raw = result.content.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1] if len(parts) > 1 else raw
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+            parsed = json.loads(raw)
+            patterns = parsed.get("patterns", []) if isinstance(parsed, dict) else []
+            for pat in patterns:
+                if not isinstance(pat, dict):
+                    continue
+                kind = str(pat.get("kind") or "user_pattern")
+                key = str(pat.get("key") or "")[:128]
+                value = pat.get("value") if isinstance(pat.get("value"), dict) else {}
+                reason = str(pat.get("reason") or "Pattern from Dream.")[:500]
+                confidence = float(pat.get("confidence") or 0.5)
+                if not key or not value:
+                    continue
+                mutation = MemoryMutation(
+                    kind=kind,  # type: ignore[arg-type]
+                    key=key,
+                    value=value,
+                    confidence=confidence,
+                    reason=reason,
+                    visibility="internal",
+                    user_editable=False,
+                    metadata={"source": "dream_pattern_extraction"},
+                )
+                await self.memory_service.upsert_memory(user.id, mutation, [])
+            logger.debug("Pattern extraction: %d patterns for user %s", len(patterns), user.id)
+        except Exception as exc:
+            logger.warning("Pattern extraction failed for user %s: %s", user.id, exc)
+
+    async def _seed_motives_if_missing(self, user: User) -> None:
+        """Ensure default motives exist for this user (idempotent)."""
+        from healthclaw.inner.motives import MotiveService
+        from healthclaw.core.config import get_settings
+
+        settings = get_settings()
+        if not settings.motives_enabled:
+            return
+        svc = MotiveService(self.session)
+        seeded = await svc.seed_defaults(user.id, seed_weight=settings.motive_seed_weight)
+        if seeded:
+            logger.debug("Seeded %d motives for user %s", seeded, user.id)
 
     async def _learn_engagement_rhythm(self, user: User) -> None:
         """Bucket the last 30 days of user-sent messages by local hour and write a rhythm Memory.

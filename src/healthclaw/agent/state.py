@@ -27,3 +27,10 @@ class AgentState(TypedDict, total=False):
     memory_documents: dict[str, str]
     thread_summary: str
     relationship_signals: list[str]
+    # WS6: new fields
+    motives: list[dict[str, Any]]                   # active motives for this user
+    active_skills: list[Any]                         # activated Skill objects
+    skill_metadata: dict[str, Any]                  # activator latency, activated names
+    web_search_results: list[dict[str, Any]]         # Tavily results (citations)
+    web_search_intent: str | None                    # "search" | "qna" | None
+    safety_category: str                             # "normal" | "distress" | "crisis_escalated"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,16 @@ KIND_WEIGHT = {
     "profile": 3,
     "episode": 2,
     "policy": 1,
+    # WS6: health-domain memory kinds
+    "medication_schedule": 6,
+    "sleep_protocol": 5,
+    "movement_routine": 5,
+    "nutrition_pattern": 4,
+    "mood_pattern": 4,
+    # WS6: self-model kinds (high priority — guide synthesis)
+    "self_model": 6,
+    "user_pattern": 5,
+    "rhythm": 4,
 }
 LEXICAL_WEIGHT = 0.4
 SEMANTIC_WEIGHT = 0.6
@@ -26,13 +37,20 @@ SEMANTIC_WEIGHT = 0.6
 class HybridRetriever:
     """Combines lexical scoring with pgvector ANN for memory retrieval.
 
+    Optionally post-processes results with a cross-encoder reranker (Cohere).
     Falls back to lexical-only when embeddings are unavailable or the
-    embedding call fails.
+    embedding call fails. Falls back to hybrid order when reranker errors.
     """
 
-    def __init__(self, session: AsyncSession, embedding_client: EmbeddingClient) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        embedding_client: EmbeddingClient,
+        reranker: Any | None = None,
+    ) -> None:
         self.session = session
         self.embedding_client = embedding_client
+        self.reranker = reranker  # RerankerClient | None
 
     async def retrieve(
         self,
@@ -41,6 +59,7 @@ class HybridRetriever:
         *,
         limit: int = 8,
         kinds: set[str] | None = None,
+        rerank_top_k_multiplier: int = 3,
     ) -> list[Memory]:
         now = datetime.now(UTC)
 
@@ -78,8 +97,16 @@ class HybridRetriever:
 
         ranked = sorted(scored, key=lambda x: (x[0], x[1]), reverse=True)
 
+        # Candidate pool for reranker: take top_k * multiplier before reranking
+        candidate_limit = limit * rerank_top_k_multiplier
+        candidates = [m for _, _, m in ranked[:candidate_limit]]
+
+        # Optionally rerank with cross-encoder
+        if self.reranker is not None and len(candidates) > limit:
+            candidates = await self.reranker.rerank(query, candidates, top_n=limit)
+
         # Update last_accessed_at on returned memories
-        top = [m for _, _, m in ranked[:limit]]
+        top = candidates[:limit]
         for m in top:
             m.last_accessed_at = now
         return top
