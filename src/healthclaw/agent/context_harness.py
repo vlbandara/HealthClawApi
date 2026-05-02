@@ -12,7 +12,11 @@ MemoryLike = dict[str, Any]
 MessageLike = dict[str, Any]
 OpenLoopLike = dict[str, Any]
 
-ACTIVE_MEMORY_KINDS = {"goal", "routine", "friction", "commitment", "open_loop"}
+ACTIVE_MEMORY_KINDS = {
+    "goal", "routine", "friction", "commitment", "open_loop",
+    # WS6: health-domain active behaviors
+    "sleep_protocol", "movement_routine", "medication_schedule",
+}
 RELATIONSHIP_MEMORY_KINDS = {"profile", "preference", "relationship"}
 STOPWORDS = {
     "about",
@@ -58,6 +62,16 @@ KIND_BASE_SCORE = {
     "relationship": 2.6,
     "episode": 1.7,
     "policy": 1.0,
+    # WS6: health-domain memory kinds
+    "medication_schedule": 4.6,
+    "sleep_protocol": 4.2,
+    "movement_routine": 4.2,
+    "mood_pattern": 3.9,
+    "nutrition_pattern": 3.8,
+    # WS6: self-model / learned patterns
+    "self_model": 4.6,
+    "user_pattern": 4.0,
+    "rhythm": 3.5,
 }
 SECTION_KIND_HINTS = {
     "goals": {"goal"},

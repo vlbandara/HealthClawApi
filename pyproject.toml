@@ -26,6 +26,10 @@ dependencies = [
   "croniter>=2.0.0",
   "cryptography>=42.0.0",
   "pyjwt>=2.8.0",
+  # WS6: memory/context + motives + skills + web search
+  "tiktoken>=0.7.0",
+  "cohere>=5.0.0",
+  "tavily-python>=0.5.0",
 ]
 
 [project.optional-dependencies]

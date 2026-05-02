@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from healthclaw.agent.wellbeing import WellbeingDecision
 from healthclaw.core.tracing import start_span
 from healthclaw.db.models import HeartbeatEvent, HeartbeatJob, ProactiveEvent, Thought
+from healthclaw.schemas.intents import InnerIntent
 
 if TYPE_CHECKING:
     from healthclaw.agent.time_context import TimeContext
@@ -172,6 +173,143 @@ class SpeechGate:
             if signal_kind_prefixes & prev_prefixes:
                 return True
         return False
+
+    async def evaluate_intent(
+        self,
+        thought: Thought,
+        user: User,
+        time_ctx: TimeContext,
+        intent: InnerIntent,
+    ) -> GateOutcome:
+        """WS6: evaluate an InnerIntent from the synthesizer.
+
+        Supports defer (reschedule to intent.earliest_send_at) in addition to
+        the binary send/hold of the legacy evaluate() path.
+        """
+        async with start_span(
+            "speech_gate.intent",
+            {
+                "user_id": user.id,
+                "thought_id": thought.id,
+                "intent_kind": intent.kind,
+                "motive": intent.motive,
+                "safety_category": intent.safety_category,
+            },
+        ):
+            # Crisis escalation always bypasses hard gate
+            if intent.safety_category == "crisis_escalated":
+                job = await self._create_heartbeat_job_from_intent(
+                    thought, user, intent, delay_minutes=0
+                )
+                thought.became_utterance = True
+                thought.heartbeat_job_id = job.id
+                await self.session.flush()
+                return GateOutcome(
+                    emit=True,
+                    message_seed=intent.draft_message or "",
+                    rationale="crisis_escalated",
+                    thought_id=thought.id,
+                    heartbeat_job_id=job.id,
+                )
+
+            # Non-speech intents
+            if intent.kind in {"reflect_silently", "wait"}:
+                return GateOutcome(
+                    emit=False,
+                    message_seed="",
+                    rationale=intent.kind,
+                    thought_id=thought.id,
+                )
+
+            reject_reason = await self._hard_gate(thought, user, time_ctx)
+            if reject_reason:
+                # Try deferral: if earliest_send_at is specified, schedule for later
+                if intent.earliest_send_at:
+                    try:
+                        from datetime import UTC, datetime
+                        defer_dt = datetime.fromisoformat(intent.earliest_send_at)
+                        if defer_dt.tzinfo is None:
+                            defer_dt = defer_dt.replace(tzinfo=UTC)
+                        now = datetime.now(UTC)
+                        delay_minutes = max(1, int((defer_dt - now).total_seconds() / 60))
+                        job = await self._create_heartbeat_job_from_intent(
+                            thought, user, intent, delay_minutes=delay_minutes
+                        )
+                        thought.became_utterance = False
+                        thought.heartbeat_job_id = job.id
+                        thought.deferred_to = defer_dt
+                        await self.session.flush()
+                        return GateOutcome(
+                            emit=False,
+                            message_seed=intent.draft_message or "",
+                            rationale=f"deferred:{reject_reason}",
+                            thought_id=thought.id,
+                            heartbeat_job_id=job.id,
+                        )
+                    except Exception:
+                        pass
+                return GateOutcome(
+                    emit=False,
+                    message_seed="",
+                    rationale=reject_reason,
+                    thought_id=thought.id,
+                )
+
+            if not intent.draft_message:
+                return GateOutcome(
+                    emit=False,
+                    message_seed="",
+                    rationale="no_draft_message",
+                    thought_id=thought.id,
+                )
+
+            job = await self._create_heartbeat_job_from_intent(
+                thought, user, intent, delay_minutes=0
+            )
+            thought.became_utterance = True
+            thought.heartbeat_job_id = job.id
+            await self.session.flush()
+            return GateOutcome(
+                emit=True,
+                message_seed=intent.draft_message,
+                rationale=f"intent:{intent.kind}",
+                thought_id=thought.id,
+                heartbeat_job_id=job.id,
+            )
+
+    async def _create_heartbeat_job_from_intent(
+        self,
+        thought: Thought,
+        user: User,
+        intent: InnerIntent,
+        delay_minutes: int = 0,
+    ) -> HeartbeatJob:
+        from datetime import timedelta
+        now = datetime.now(UTC)
+        due_at = now + timedelta(minutes=delay_minutes) if delay_minutes else now
+        idempotency_key = (
+            f"synth:{user.id}:{thought.id}:{now.strftime('%Y-%m-%dT%H')}"
+        )
+        job = HeartbeatJob(
+            user_id=user.id,
+            kind="synthesized_intent",
+            due_at=due_at,
+            channel=user.notification_channel or "telegram",
+            payload={
+                "thought_id": thought.id,
+                "signal_ids": thought.signal_ids,
+                "summary": thought.content_summary,
+                "salience": thought.salience,
+                "message_seed": intent.draft_message or "",
+                "motive": intent.motive,
+                "intent_kind": intent.kind,
+                "safety_category": intent.safety_category,
+            },
+            idempotency_key=idempotency_key,
+        )
+        self.session.add(job)
+        await self.session.flush()
+        return job
 
     async def _create_heartbeat_job(
         self, thought: Thought, user: User, decision: WellbeingDecision
