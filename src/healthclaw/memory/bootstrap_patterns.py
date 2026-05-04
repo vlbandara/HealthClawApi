@@ -61,7 +61,7 @@ async def seed_observable_patterns(
     # Compute basic stats
     lengths = [len(m.content or "") for m in user_msgs]
     avg_length = round(mean(lengths), 1)
-    brevity_ratio = sum(1 for l in lengths if l <= 20) / len(lengths)
+    brevity_ratio = sum(1 for ln in lengths if ln <= 20) / len(lengths)
     # Estimate reply cadence (seconds between consecutive user messages)
     lags: list[float] = []
     for i in range(1, len(user_msgs)):

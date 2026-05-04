@@ -20,7 +20,6 @@ Keyboard shortcuts:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -245,8 +244,8 @@ async def _inner_tick_sweep() -> None:
 
 async def _ensure_db() -> None:
     """Create all tables if they don't exist yet."""
-    from healthclaw.db.session import engine
     from healthclaw.db.models import Base
+    from healthclaw.db.session import engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -263,8 +262,8 @@ async def _bootstrap_user(
     naturally when timezone_confidence is low. If a Telegram language_code was
     captured we use it as a low-confidence hint to pre-populate timezone.
     """
-    from healthclaw.db.session import SessionLocal
     from healthclaw.db.models import User
+    from healthclaw.db.session import SessionLocal
 
     async with SessionLocal() as session:
         user = await session.get(User, user_id)
@@ -352,7 +351,6 @@ async def main() -> None:
     asyncio.create_task(_worker_loop("inner_tick", _inner_tick_sweep, 60))
 
     from healthclaw.channels.telegram import TelegramAdapter
-    from healthclaw.schemas.events import ConversationEvent
     from healthclaw.db.session import SessionLocal
     from healthclaw.services.conversation import ConversationService
 

@@ -70,11 +70,11 @@ async def route_heartbeat_job_through_synth(
     try:
         from healthclaw.agent.anticipation import populate_anticipation
         from healthclaw.agent.time_context import build_time_context
+        from healthclaw.db.models import Signal, Thought
         from healthclaw.inner.motives import MotiveService
         from healthclaw.inner.salience import compute_salience
-        from healthclaw.inner.synthesizer import InnerSynthesizer
         from healthclaw.inner.speech_gate import SpeechGate
-        from healthclaw.db.models import Signal, Thought
+        from healthclaw.inner.synthesizer import InnerSynthesizer
 
         time_ctx = build_time_context(user, now=now)
         time_ctx_dict = time_ctx.to_dict()
@@ -164,7 +164,7 @@ async def _already_greeted_today(
 ) -> bool:
     """Return True if any greeting message was sent/received today in the user's local timezone."""
     from zoneinfo import ZoneInfo
-    from sqlalchemy import func
+
     from healthclaw.db.models import Message
 
     try:

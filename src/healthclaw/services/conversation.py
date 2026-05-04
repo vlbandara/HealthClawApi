@@ -609,7 +609,6 @@ class ConversationService:
                                 "layer": "relationship",
                             }
                         )
-                        print(f"DEBUG_CLOSE: appending mutation for key=closed_loop:{open_loop.id}", flush=True)
                         close_span.set_attribute("closed", True)
                     executed.append(
                         {

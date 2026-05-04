@@ -324,7 +324,9 @@ class OpenLoop(Base):
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     # WS7: topic memory engagement tracking
     surface_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_surfaced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_surfaced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cooldown_hours: Mapped[int] = mapped_column(Integer, default=12)
     max_surfaces: Mapped[int] = mapped_column(Integer, default=2)

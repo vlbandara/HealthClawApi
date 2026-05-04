@@ -8,7 +8,6 @@ No regex. The LLM judges whether the user engaged with the topic.
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime
 
