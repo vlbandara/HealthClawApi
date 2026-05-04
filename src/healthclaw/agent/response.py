@@ -155,10 +155,11 @@ async def generate_companion_response(
     )
     recent_context = "\n".join(recent_lines) or "- none"
     conversation_digest = (thread_summary or "").strip()
+    safe_time_dict = _safe_time_context_dict(time_context)
     runtime_context = {
         "user_id": user_context.get("id", "unknown"),
         "timezone": user_context.get("timezone", "unknown"),
-        "local_time": time_context.to_dict(),
+        "local_time": safe_time_dict,
     }
 
     # Build skill prompt block
@@ -197,7 +198,7 @@ async def generate_companion_response(
                 soul_preferences,
                 user_id=str(runtime_context["user_id"]),
                 timezone=str(runtime_context["timezone"]),
-                local_time=time_context.to_dict(),
+                local_time=safe_time_dict,
                 recent_message_count=len(recent_messages),
                 memory_documents=memory_documents,
                 trust_level=_trust_level(user_context),
@@ -221,6 +222,11 @@ async def generate_companion_response(
             "content": (
                 "# Runtime Context\n\n"
                 f"{runtime_context}\n\n"
+                "# Turn Priority\n\n"
+                "Answer the Current User Message, not the previous assistant question. "
+                "Use Recent Conversation only as background. If the current message is a "
+                "direct utility question, short clarification, or decline, satisfy that "
+                "turn plainly and do not re-open an earlier wellness prompt.\n\n"
                 "# Retrieved Memory\n\n"
                 f"{memory_context}\n\n"
                 "# Conversation Digest\n\n"
@@ -476,6 +482,26 @@ def _observable_signals_block(
     for signal in relationship_signals or []:
         lines.append(f"- note={signal}")
     return "\n<observable_signals>\n" + "\n".join(lines) + "\n</observable_signals>"
+
+
+_TIME_BEARING_KEYS = frozenset(
+    {
+        "local_datetime",
+        "local_date",
+        "weekday",
+        "part_of_day",
+        "human_phrasing",
+        "circadian_phase",
+        "day_arc_position",
+    }
+)
+
+
+def _safe_time_context_dict(time_context: TimeContext) -> dict:
+    full = time_context.to_dict()
+    if time_context.timezone_confidence >= 0.6:
+        return full
+    return {k: v for k, v in full.items() if k not in _TIME_BEARING_KEYS}
 
 
 def _float_or_none(value: object) -> float | None:
