@@ -261,6 +261,7 @@ class ConversationService:
         user_context = {
             "id": user.id,
             "timezone": user.timezone,
+            "timezone_confidence": float(user.timezone_confidence or 0.0),
             "quiet_start": user.quiet_start,
             "quiet_end": user.quiet_end,
             "proactive_enabled": user.proactive_enabled,
