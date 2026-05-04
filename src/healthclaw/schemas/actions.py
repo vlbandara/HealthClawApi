@@ -29,6 +29,36 @@ class CloseOpenLoopPayload(BaseModel):
     outcome: Literal["completed", "dropped", "reframed"]
 
 
+# ── WS7: naturalness pass action extensions ──────────────────────────────────
+
+
+class SetUserTimezonePayload(BaseModel):
+    """Persist the user's timezone and optionally their location.
+
+    Emitted when the user tells us their city/country/timezone or shares a location.
+    The executor writes User.timezone, optional home_lat/home_lon, and timezone_confidence.
+    """
+    tz: str = Field(..., description="IANA timezone name, e.g. 'Asia/Colombo'")
+    lat: float | None = None
+    lon: float | None = None
+    source: Literal["user_stated", "shared_location"] = "user_stated"
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+
+
+class OpenTopicPayload(BaseModel):
+    """Open a tracked topic — the agent's suggestion, commitment, or follow-up intent.
+
+    When the agent makes a suggestion the user should follow up on, it emits open_topic.
+    The executor writes an open_loops row. The topic has a cooldown and max_surfaces so
+    it never gets re-surfaced more than twice without fresh engagement.
+    """
+    title: str = Field(..., max_length=240)
+    kind: Literal["nudge", "commitment", "check_in", "question_pending"] = "nudge"
+    cooldown_hours: int = Field(default=12, ge=1, le=168)   # 1h – 1 week
+    max_surfaces: int = Field(default=2, ge=1, le=10)
+    expires_at_iso: str | None = None
+
+
 # ── WS6: health skill action extensions ───────────────────────────────────────
 
 

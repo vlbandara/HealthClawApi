@@ -89,6 +89,32 @@ class InnerSynthesizer:
         }
 
         system_prompt = _load_synthesizer_prompt()
+
+        # Prepend Time Truth block from time_context if available
+        from healthclaw.agent.time_context import TimeContext as _TC
+        _tc_raw = time_ctx_dict  # noqa: SIM910
+        if isinstance(_tc_raw, dict) and _tc_raw.get("human_phrasing"):
+            # Reconstruct a minimal TimeContext just to reuse time_truth_block()
+            try:
+                _hp = _tc_raw["human_phrasing"]
+                _conf = float(_tc_raw.get("timezone_confidence", 0.0) or 0.0)
+                _mini = _TC(
+                    local_datetime=_tc_raw.get("local_datetime", ""),
+                    local_date=_tc_raw.get("local_date", ""),
+                    weekday=_tc_raw.get("weekday", ""),
+                    part_of_day=_tc_raw.get("part_of_day", ""),
+                    quiet_hours=bool(_tc_raw.get("quiet_hours", False)),
+                    interaction_gap_days=_tc_raw.get("interaction_gap_days"),
+                    long_lapse=bool(_tc_raw.get("long_lapse", False)),
+                    human_phrasing=_hp,
+                    timezone_confidence=_conf,
+                )
+                _tt = _mini.time_truth_block()
+                if _tt:
+                    system_prompt = _tt + "\n\n---\n\n" + system_prompt
+            except Exception:
+                pass  # Degraded gracefully — synthesizer still runs without time truth
+
         # Append crisis hotline map so LLM can pick the right number
         try:
             hotline_map = json.loads(settings.crisis_hotline_locale_map)

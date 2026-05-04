@@ -184,7 +184,43 @@ async def process_due_heartbeats() -> dict[str, int]:
                 suppressed += 1
                 continue
 
-            # Soft gate: LLM skip/run decision
+            # WS7: Try synthesizer-routed gate first (when inner_synthesizer_enabled)
+            synth_decision = None
+            try:
+                from healthclaw.proactivity.route_through_synth import (
+                    route_heartbeat_job_through_synth,
+                )
+                synth_decision = await route_heartbeat_job_through_synth(
+                    job, user, session, now=now
+                )
+            except Exception as _se:
+                logger.debug("synth_route failed for job %s: %s", job.id, _se)
+
+            if synth_decision is not None:
+                if synth_decision.action == "suppress":
+                    job.status = "suppressed"
+                    await heartbeat.record_event(
+                        job, "suppressed", synth_decision.reason, trace_id=trace_id
+                    )
+                    soft_skipped += 1
+                    continue
+                elif synth_decision.action == "defer":
+                    if synth_decision.defer_until:
+                        job.due_at = synth_decision.defer_until
+                    else:
+                        job.due_at = now + timedelta(minutes=60)
+                    await heartbeat.record_event(
+                        job, "deferred", synth_decision.reason, trace_id=trace_id
+                    )
+                    deferred += 1
+                    continue
+                # action == "emit" → fall through with synthesizer-generated message
+                # Store the draft message for use below
+                _synth_override_message = synth_decision.message
+            else:
+                _synth_override_message = None
+
+            # Soft gate: LLM skip/run decision (legacy, runs when synthesizer not active)
             reflection = await heartbeat.should_send_soft(job, user, now)
             if not reflection.reach_out or reflection.when != "now":
                 delay_minutes = parse_delay_minutes(reflection.when)
@@ -243,7 +279,16 @@ async def process_due_heartbeats() -> dict[str, int]:
                     failed += 1
                     continue
             try:
-                message_text = reflection.message_seed or await heartbeat.render_job(job)
+                # WS7: prefer synthesizer-generated message over heartbeat template
+                if _synth_override_message:
+                    message_text = _synth_override_message
+                else:
+                    message_text = reflection.message_seed or await heartbeat.render_job(job)
+                logger.debug(
+                    "heartbeat send user=%s kind=%s via=%s",
+                    job.user_id, getattr(job, "kind", "?"),
+                    "synthesizer" if _synth_override_message else "legacy",
+                )
                 await telegram.send_status(external_id, "typing", bot_token=bot_token)
                 await telegram.send_message(external_id, message_text, bot_token=bot_token)
             except Exception:

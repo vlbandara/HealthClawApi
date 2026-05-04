@@ -15,6 +15,8 @@ from healthclaw.schemas.actions import (
     CloseOpenLoopPayload,
     CreateOpenLoopPayload,
     CreateReminderPayload,
+    OpenTopicPayload,
+    SetUserTimezonePayload,
 )
 
 ACTION_ADAPTER = TypeAdapter(Action)
@@ -201,6 +203,22 @@ async def execute_actions(state: AgentState) -> AgentState:
             except ValidationError:
                 dropped.append({"type": action_type, "reason": "payload_invalid"})
                 continue
+        elif action_type == "set_user_timezone":
+            try:
+                tz_payload = SetUserTimezonePayload.model_validate(payload)
+                payload = tz_payload.model_dump(mode="json")
+            except ValidationError:
+                dropped.append({"type": action_type, "reason": "payload_invalid"})
+                continue
+        elif action_type == "open_topic":
+            try:
+                ot_payload = OpenTopicPayload.model_validate(payload)
+                payload = ot_payload.model_dump(mode="json")
+            except ValidationError:
+                dropped.append({"type": action_type, "reason": "payload_invalid"})
+                continue
+        elif action_type in {"log_metric", "schedule_protocol", "web_search"}:
+            pass  # passed through to downstream handlers; no pre-validation needed here
 
         if action_type != "none":
             normalized_action = {

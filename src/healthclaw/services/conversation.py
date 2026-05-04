@@ -47,6 +47,8 @@ from healthclaw.schemas.actions import (
     CloseOpenLoopPayload,
     CreateOpenLoopPayload,
     CreateReminderPayload,
+    OpenTopicPayload,
+    SetUserTimezonePayload,
 )
 from healthclaw.schemas.events import ConversationEvent
 from healthclaw.schemas.memory import MemoryMutation
@@ -236,7 +238,19 @@ class ConversationService:
         soul_preferences = await self._soul_preferences_payload(user.id)
         engagement = await self._engagement_state(user.id)
         engagement_context = self._engagement_payload(engagement)
-        open_loops = await self._open_loops_payload(user.id)
+        raw_open_loops = await self._open_loops_payload(user.id)
+
+        # WS7: score engagement for any recently surfaced open topics
+        try:
+            from healthclaw.inner.engagement import (
+                filter_surfaceable_open_loops,
+                score_open_topic_engagement,
+            )
+            await score_open_topic_engagement(user.id, event.content or "", self.session)
+            open_loops = filter_surfaceable_open_loops(raw_open_loops)
+        except Exception:
+            open_loops = raw_open_loops  # fallback — never block the response
+
         streaks = await RitualStreakService(self.session).streaks_payload(user.id)
         recent_messages = await self._recent_messages_payload(
             thread.id,
@@ -427,6 +441,18 @@ class ConversationService:
         await self._update_thread_summary(thread, event.content, assistant_message.content, user.id)
         await self._record_usage(user, state.get("trace_metadata", {}).get("generation", {}))
 
+        # WS7: bootstrap user_pattern rows once enough turns have accumulated
+        if self.settings.bootstrap_patterns_after_turns > 0:
+            try:
+                from healthclaw.memory.bootstrap_patterns import seed_observable_patterns
+                await seed_observable_patterns(
+                    user.id,
+                    self.session,
+                    min_turns=self.settings.bootstrap_patterns_after_turns,
+                )
+            except Exception:
+                pass  # non-critical; never block the response
+
         self.session.add(
             SafetyEvent(
                 user_id=user.id,
@@ -591,6 +617,50 @@ class ConversationService:
                             "summary": action.summary,
                             "outcome": action.outcome,
                         }
+                    )
+                elif action_type == "set_user_timezone":
+                    # WS7: persist timezone from LLM capture
+                    tz_action = SetUserTimezonePayload.model_validate(payload)
+                    try:
+                        from zoneinfo import ZoneInfo
+                        ZoneInfo(tz_action.tz)  # validate IANA name
+                        user.timezone = tz_action.tz
+                        user.timezone_confidence = tz_action.confidence
+                        if tz_action.lat is not None:
+                            user.home_lat = tz_action.lat
+                        if tz_action.lon is not None:
+                            user.home_lon = tz_action.lon
+                        executed.append({"type": action_type, "tz": tz_action.tz})
+                        logger.info(
+                            "set_user_timezone: user=%s tz=%s conf=%.2f source=%s",
+                            user.id, tz_action.tz, tz_action.confidence, tz_action.source,
+                        )
+                    except Exception as tz_err:
+                        dropped.append({"type": action_type, "reason": f"invalid_tz: {tz_err}"})
+                elif action_type == "open_topic":
+                    # WS7: track agent's suggestion as an open topic with cooldown
+                    from datetime import timedelta as _timedelta
+                    ot_action = OpenTopicPayload.model_validate(payload)
+                    now_utc = utc_now()
+                    loop = OpenLoop(
+                        user_id=user.id,
+                        thread_id=thread.id,
+                        source_message_id=user_message.id,
+                        kind=ot_action.kind,
+                        title=ot_action.title,
+                        status="open",
+                        cooldown_hours=ot_action.cooldown_hours,
+                        max_surfaces=ot_action.max_surfaces,
+                        surface_count=1,
+                        last_surfaced_at=now_utc,
+                        cooldown_until=now_utc + _timedelta(hours=ot_action.cooldown_hours),
+                    )
+                    self.session.add(loop)
+                    await self.session.flush()
+                    executed.append({"type": action_type, "id": loop.id, "title": ot_action.title})
+                    logger.debug(
+                        "open_topic: user=%s title=%s cooldown=%dh",
+                        user.id, ot_action.title, ot_action.cooldown_hours,
                     )
                 elif action_type and action_type != "none":
                     proposed_action = ProposedAction(
@@ -1003,6 +1073,14 @@ class ConversationService:
                     "kind": loop.kind,
                     "status": loop.status,
                     "age_hours": round(age_hours, 1),
+                    # WS7: engagement gating fields
+                    "surface_count": getattr(loop, "surface_count", 0) or 0,
+                    "max_surfaces": getattr(loop, "max_surfaces", 2) or 2,
+                    "cooldown_until": (
+                        loop.cooldown_until.isoformat()
+                        if getattr(loop, "cooldown_until", None)
+                        else None
+                    ),
                 }
             )
         return loops

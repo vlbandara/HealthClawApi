@@ -44,6 +44,15 @@ ACTION_OUTPUT_CONTRACT = (
     "  web_search: "
     '{"type":"web_search","payload":{"query":"<search query>","health_clinical":false},'
     '"rationale":"<why I need fresh info>"}\n'
+    "  set_user_timezone: "
+    '{"type":"set_user_timezone","payload":{"tz":"<IANA tz e.g. Asia/Colombo>",'
+    '"lat":null,"lon":null,"source":"user_stated","confidence":0.9},'
+    '"rationale":"<why>"} — emit when the user tells you their city/country/timezone\n'
+    "  open_topic: "
+    '{"type":"open_topic","payload":{"title":"<suggestion made>","kind":"nudge",'
+    '"cooldown_hours":12,"max_surfaces":2},"rationale":"<why>"} — '
+    "emit when you make a suggestion the user should follow up on; "
+    "NEVER re-surface the same topic if it is already in Open Loops or marked cooled\n"
     '  none: {"type":"none","payload":{},"rationale":null}\n'
     "safety_category: Set to 'crisis_escalated' when you sense serious distress or crisis. "
     "When crisis_escalated, include crisis support resource in message and emit no other actions.\n"
@@ -200,6 +209,7 @@ async def generate_companion_response(
                 streaks=streaks,
                 open_loops=open_loops,
                 safety_category="model_managed",
+                time_truth_block=time_context.time_truth_block() or None,
             )
             + skill_block
             + web_sources_block
@@ -240,6 +250,31 @@ async def generate_companion_response(
     except RuntimeError:
         return _offline_generation("openrouter_error")
     generation_result, parse_error = _parse_generation_payload(result.content)
+
+    # WS7: Style guardrails — single regen if violations found
+    style_violations: list[str] = []
+    if settings.style_guardrails_enabled and generation_result.message:
+        style_violations = _check_style_violations(
+            generation_result.message,
+            user_content,
+            recent_messages or [],
+        )
+        if style_violations:
+            regen_messages = _build_regen_messages(messages, style_violations)
+            try:
+                regen_result = await client.chat_completion(
+                    regen_messages,
+                    max_tokens=settings.openrouter_chat_max_tokens,
+                    temperature=settings.openrouter_chat_temperature,
+                    metadata={**metadata, "regen": "style_guardrail"},
+                )
+                regen_gen, regen_parse_error = _parse_generation_payload(regen_result.content)
+                if regen_gen.message:
+                    generation_result = regen_gen
+                    parse_error = regen_parse_error
+            except Exception:
+                pass  # Keep original on regen failure
+
     return (
         generation_result,
         {
@@ -250,8 +285,100 @@ async def generate_companion_response(
             "conversation_digest_used": bool(conversation_digest),
             "streaks_surfaced": streaks_surfaced,
             "actions.parse_error": parse_error,
+            "style_violations": style_violations,
         },
     )
+
+
+# ── WS7: Style guardrails ─────────────────────────────────────────────────────
+
+_BANNED_OPENERS = (
+    "alright,",
+    "okay,",
+    "sure,",
+    "got it,",
+    "of course,",
+    "good to hear from you",
+    "good morning",
+    "good evening",
+    "good afternoon",
+    "good night",
+)
+
+_BREVITY_REGEN_INSTRUCTION = (
+    "\n\n[STYLE CORRECTION: The user's last message was very short. "
+    "Please keep your reply to 1-2 short sentences. No questions.]"
+)
+
+_OPENER_REGEN_INSTRUCTION = (
+    "\n\n[STYLE CORRECTION: Your reply started with a banned filler phrase. "
+    "Rewrite it — start directly with the substance. "
+    "Never begin with: Alright, Okay, Sure, Got it, Of course, Good to hear from you, "
+    "Good morning, Good evening, Good afternoon.]"
+)
+
+_Q_STACK_REGEN_INSTRUCTION = (
+    "\n\n[STYLE CORRECTION: Your reply contained more than one question mark. "
+    "Keep at most one question per reply. Rewrite with at most one question.]"
+)
+
+
+def _check_style_violations(
+    message: str,
+    user_content: str,
+    recent_messages: list[dict[str, object]],
+) -> list[str]:
+    """Return list of style violation codes found in the generated message."""
+    violations: list[str] = []
+    if not message:
+        return violations
+
+    # Check banned opener (startswith check, no regex)
+    first_chars = message.lstrip()[:40].lower()
+    for banned in _BANNED_OPENERS:
+        if first_chars.startswith(banned):
+            violations.append("banned_opener")
+            break
+
+    # Check Q-stacking (only mechanical ? count — not semantic)
+    if message.count("?") > 1:
+        violations.append("q_stack")
+
+    # Check brevity: if user message is ≤ 3 words, reply should be ≤ 280 chars
+    user_word_count = len(user_content.split())
+    if user_word_count <= 3 and len(message) > 280:
+        violations.append("brevity")
+
+    return violations
+
+
+def _build_regen_messages(
+    original_messages: list[dict[str, object]],
+    violations: list[str],
+) -> list[dict[str, object]]:
+    """Append correction instructions to the last user message for a single regen."""
+    instruction_parts: list[str] = []
+    if "banned_opener" in violations:
+        instruction_parts.append(_OPENER_REGEN_INSTRUCTION.strip())
+    if "q_stack" in violations:
+        instruction_parts.append(_Q_STACK_REGEN_INSTRUCTION.strip())
+    if "brevity" in violations:
+        instruction_parts.append(_BREVITY_REGEN_INSTRUCTION.strip())
+
+    if not instruction_parts:
+        return original_messages
+
+    regen = list(original_messages)
+    last_user = next(
+        (i for i in reversed(range(len(regen))) if regen[i]["role"] == "user"),
+        None,
+    )
+    if last_user is not None:
+        regen[last_user] = {
+            **regen[last_user],
+            "content": str(regen[last_user]["content"]) + "\n\n" + "\n".join(instruction_parts),
+        }
+    return regen
 
 
 def _parse_generation_payload(raw_content: str) -> tuple[GenerationResult, bool]:
