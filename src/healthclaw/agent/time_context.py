@@ -22,9 +22,62 @@ class TimeContext:
     day_arc_position: dict = field(default_factory=dict)
     anticipated_events: list = field(default_factory=list)
     interaction_rhythm: dict = field(default_factory=dict)
+    # WS7: Time Truth — authoritative human-readable strings for LLM injection
+    human_phrasing: dict = field(default_factory=dict)
+    timezone_confidence: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    def time_truth_block(self) -> str:
+        """Return the authoritative 'NOW' block to inject at the top of every system prompt.
+
+        The block is designed to prevent LLM time hallucination — the LLM is told
+        explicitly what day/time it is and forbidden from claiming anything different.
+        """
+        hp = self.human_phrasing
+        if not hp:
+            return ""
+        now_str = hp.get("now_user_local", "unknown")
+        confidence = self.timezone_confidence
+        if confidence < 0.6:
+            return (
+                "# Time Truth (authoritative)\n\n"
+                f"NOW (server time, user timezone not yet confirmed): {now_str}\n"
+                "- timezone_confidence is LOW. Do NOT volunteer the time or day to the user.\n"
+                "- If asked what time/day it is, say you're not certain of their timezone yet "
+                "and ask them once.\n"
+                "- Never invent a day, date, or hour."
+            )
+        return (
+            "# Time Truth (authoritative)\n\n"
+            f"NOW (user's local time): {now_str}\n"
+            f"- Weekday: {hp.get('weekday_user', 'unknown')}\n"
+            f"- Date: {hp.get('date_user', 'unknown')}\n"
+            f"- Time: {hp.get('time_user', 'unknown')}\n"
+            f"- Timezone: {hp.get('tz_name', 'unknown')} ({hp.get('tz_offset', '?')})\n"
+            "- You may NEVER state a different day, date, or hour than shown above.\n"
+            "- If the user contradicts you about the time, trust THEIR statement, "
+            "apologise once briefly, and move on — do NOT re-state the time.\n"
+            "- Use the weekday and time naturally when relevant; do not over-reference it."
+        )
+
+
+def _build_human_phrasing(local: datetime, tz_name: str) -> dict[str, object]:
+    """Build unambiguous, LLM-friendly human phrasing for the current local datetime."""
+    offset = local.strftime("%z")  # e.g. "+0530"
+    if len(offset) == 5:  # "+0530" → "+05:30"
+        offset = offset[:3] + ":" + offset[3:]
+    return {
+        "now_user_local": local.strftime(f"%A, %-d %B %Y, %-I:%M %p ({tz_name}, UTC{offset})"),
+        "now_short": local.strftime("%a %-I:%M %p"),
+        "weekday_user": local.strftime("%A"),
+        "date_user": local.strftime("%-d %B %Y"),
+        "time_user": local.strftime("%-I:%M %p"),
+        "tz_name": tz_name,
+        "tz_offset": f"UTC{offset}",
+        "is_weekend": local.weekday() >= 5,
+    }
 
 
 def parse_hhmm(value: str) -> time:
@@ -123,6 +176,7 @@ def build_time_context(
     *,
     calendar_events: list[Any] | None = None,
     rhythm_memory: dict[str, Any] | None = None,
+    timezone_confidence: float | None = None,
 ) -> TimeContext:
     timezone = user["timezone"] if isinstance(user, dict) else user.timezone
     quiet_start = user["quiet_start"] if isinstance(user, dict) else user.quiet_start
@@ -132,6 +186,14 @@ def build_time_context(
         if isinstance(user, dict)
         else getattr(user, "chronotype", "intermediate")
     ) or "intermediate"
+    # Prefer explicitly passed confidence; fall back to user attribute if it exists
+    if timezone_confidence is None:
+        timezone_confidence = float(
+            getattr(user, "timezone_confidence", None)
+            or user.get("timezone_confidence", 0.0)  # type: ignore[union-attr]
+            if isinstance(user, dict)
+            else getattr(user, "timezone_confidence", 0.0) or 0.0
+        )
 
     tz = ZoneInfo(timezone)
     base = now or datetime.now(UTC)
@@ -159,6 +221,8 @@ def build_time_context(
     if rhythm_memory and isinstance(rhythm_memory, dict):
         rhythm = rhythm_memory
 
+    human_phrasing = _build_human_phrasing(local, timezone)
+
     return TimeContext(
         local_datetime=local.isoformat(),
         local_date=local.date().isoformat(),
@@ -171,4 +235,6 @@ def build_time_context(
         day_arc_position=day_arc,
         anticipated_events=anticipated,
         interaction_rhythm=rhythm,
+        human_phrasing=human_phrasing,
+        timezone_confidence=float(timezone_confidence or 0.0),
     )

@@ -55,8 +55,14 @@ def system_prompt(
     streaks: list[dict[str, object]] | None = None,
     open_loops: list[dict[str, object]] | None = None,
     safety_category: str | None = None,
+    # WS7: Time Truth
+    time_truth_block: str | None = None,
 ) -> str:
-    modules = [_load_prompt_module(module).strip() for module in PROMPT_MODULES]
+    modules: list[str] = []
+    # Time Truth always comes first — the LLM must see it before anything else
+    if time_truth_block:
+        modules.append(time_truth_block.strip())
+    modules += [_load_prompt_module(module).strip() for module in PROMPT_MODULES]
     modules.append(
         _observable_context_block(
             soul_preferences=soul_preferences,

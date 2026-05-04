@@ -44,6 +44,8 @@ class User(Base):
     home_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
     chronotype: Mapped[str] = mapped_column(String(16), default="intermediate")
     locale: Mapped[str] = mapped_column(String(16), default="en")
+    # WS7: timezone confidence (0.0 = default/guessed, 1.0 = user-confirmed)
+    timezone_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     notification_channel: Mapped[str] = mapped_column(String(32), default="telegram")
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -320,6 +322,15 @@ class OpenLoop(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    # WS7: topic memory engagement tracking
+    surface_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_surfaced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cooldown_hours: Mapped[int] = mapped_column(Integer, default=12)
+    max_surfaces: Mapped[int] = mapped_column(Integer, default=2)
+    engaged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    engagement_score: Mapped[float] = mapped_column(Float, default=0.0)
+    disengage_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

@@ -112,6 +112,16 @@ class Settings(BaseSettings):
     web_search_cache_ttl_seconds: int = 900
     web_search_health_domains_only: bool = True
 
+    # WS7: naturalness pass
+    style_guardrails_enabled: bool = True
+    timezone_elicitation_enabled: bool = True
+    open_topic_default_cooldown_hours: int = 12
+    open_topic_default_max_surfaces: int = 2
+    engagement_sensor_model: str = "google/gemini-2.5-flash-lite"
+    fast_pattern_every_n_messages: int = 0   # 0 = disabled; set to 10 in local
+    bootstrap_patterns_after_turns: int = 5
+    self_model_pin_limit: int = 3
+
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
