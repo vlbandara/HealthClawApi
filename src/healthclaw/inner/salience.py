@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from healthclaw.db.models import Motive
+    from healthclaw.integrations.weather import WeatherSalienceContext
 
 
 @dataclass
@@ -29,6 +30,7 @@ def compute_salience(
     quiet_hours: bool | None = None,
     already_deliberated_today: bool = False,
     motives: list[Motive] | None = None,
+    weather_context: WeatherSalienceContext | None = None,
 ) -> SalienceResult:
     """Pure-Python salience scoring — no LLM, no I/O.
 
@@ -59,9 +61,15 @@ def compute_salience(
         if kind == "weather":
             temp_c = float(val.get("temp_c", 0))
             humidity = int(val.get("humidity_pct", 0))
+            feels_like = float(val.get("feels_like_c", val.get("apparent_temperature", temp_c)))
             uv = float(val.get("uv_index", 0))
             wmo = int(val.get("wmo_code", 0))
-            if temp_c > 31 and humidity > 70:
+            if _is_weather_heat_stress(
+                temp_c=temp_c,
+                humidity_pct=humidity,
+                feels_like_c=feels_like,
+                weather_context=weather_context,
+            ):
                 _add_weighted("weather_heat_stress", 0.4)
             if uv > 8:
                 _add_weighted("weather_high_uv", 0.2)
@@ -141,3 +149,20 @@ def compute_salience(
 
 def _add(breakdown: dict[str, float], key: str, value: float) -> None:
     breakdown[key] = breakdown.get(key, 0.0) + value
+
+
+def _is_weather_heat_stress(
+    *,
+    temp_c: float,
+    humidity_pct: int,
+    feels_like_c: float,
+    weather_context: WeatherSalienceContext | None,
+) -> bool:
+    # Backward-compatible default for callers that have not yet been upgraded.
+    if weather_context is None:
+        return temp_c > 31 and humidity_pct > 70
+
+    if not weather_context.has_heat_baseline or weather_context.seasonal_normal is None:
+        return False
+
+    return feels_like_c >= weather_context.seasonal_normal.heat_stress_threshold_c

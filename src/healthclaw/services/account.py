@@ -4,6 +4,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -36,11 +37,46 @@ class InvalidBotTokenError(AccountError):
     pass
 
 
+class BotAlreadyBoundError(AccountError):
+    pass
+
+
+class BotAlreadyClaimedError(AccountError):
+    pass
+
+
+class PublicBaseUrlConfigError(AccountError):
+    pass
+
+
+class WebhookRegistrationError(AccountError):
+    pass
+
+
 @dataclass(frozen=True)
 class BotIdentity:
     telegram_id: str
     username: str | None
     first_name: str | None
+
+
+def validate_public_base_url(raw_url: str | None) -> str:
+    candidate = (raw_url or "").strip()
+    if not candidate:
+        raise PublicBaseUrlConfigError(
+            "PUBLIC_BASE_URL must be a public HTTPS URL before connecting a bot."
+        )
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme != "https":
+        raise PublicBaseUrlConfigError(
+            "PUBLIC_BASE_URL must be a public HTTPS URL before connecting a bot."
+        )
+    if not host or host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        raise PublicBaseUrlConfigError(
+            "PUBLIC_BASE_URL must be a public HTTPS URL before connecting a bot."
+        )
+    return candidate.rstrip("/")
 
 
 class AccountService:
@@ -81,10 +117,22 @@ class AccountService:
         return account
 
     async def bind_bot_token(self, account: Account, raw_token: str) -> BotIdentity:
+        if account.bot_telegram_id or account.bot_token_ciphertext:
+            raise BotAlreadyBoundError("This account already has a Telegram bot connected")
         token = raw_token.strip()
         if not TELEGRAM_TOKEN_REGEX.match(token):
             raise InvalidBotTokenError("Telegram bot tokens look like '12345:ABCDE...'")
         identity = await self._fetch_bot_identity(token)
+        existing_result = await self.session.execute(
+            select(Account).where(
+                Account.bot_telegram_id == identity.telegram_id,
+                Account.id != account.id,
+            )
+        )
+        if existing_result.scalar_one_or_none() is not None:
+            raise BotAlreadyClaimedError(
+                "This Telegram bot is already connected to another account"
+            )
         account.bot_token_ciphertext = encrypt_secret(token, self.settings)
         account.bot_username = identity.username
         account.bot_telegram_id = identity.telegram_id
@@ -164,13 +212,8 @@ class AccountService:
         )
 
     async def _register_webhook(self, account: Account, token: str) -> None:
-        if not self.settings.public_base_url:
-            logger.warning(
-                "PUBLIC_BASE_URL not configured; skipping webhook registration for %s",
-                account.id,
-            )
-            return
-        webhook_url = f"{self.settings.public_base_url.rstrip('/')}/webhooks/telegram/{account.id}"
+        public_base_url = validate_public_base_url(self.settings.public_base_url)
+        webhook_url = f"{public_base_url}/webhooks/telegram/{account.id}"
         url = f"https://api.telegram.org/bot{token}/setWebhook"
         params = {
             "url": webhook_url,
@@ -181,10 +224,12 @@ class AccountService:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.post(url, json=params)
         except httpx.HTTPError as exc:
-            raise InvalidBotTokenError(f"Could not register webhook: {exc}") from exc
+            raise WebhookRegistrationError(
+                f"Could not reach Telegram: {type(exc).__name__}"
+            ) from exc
         body = response.json() if response.content else {}
         if not body.get("ok"):
-            raise InvalidBotTokenError(
+            raise WebhookRegistrationError(
                 f"Telegram refused setWebhook: {body.get('description') or response.text}"
             )
 

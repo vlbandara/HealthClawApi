@@ -56,6 +56,11 @@ async def run_inner_tick(user_id: str, session: AsyncSession) -> dict:
 
     outbound_in_cooldown = await _outbound_in_cooldown(user, now, session)
     already_deliberated_today = await _deliberated_today(user_id, signals, session)
+    weather_context = None
+    if any(str(signal.kind) == "weather" for signal in signals):
+        from healthclaw.integrations.weather import build_weather_salience_context
+
+        weather_context = await build_weather_salience_context(user, now=now)
 
     salience = compute_salience(
         signals,
@@ -64,6 +69,7 @@ async def run_inner_tick(user_id: str, session: AsyncSession) -> dict:
         quiet_hours=time_ctx.quiet_hours,
         already_deliberated_today=already_deliberated_today,
         motives=motives,
+        weather_context=weather_context,
     )
 
     signal_summary = _summarize_signals(signals, time_ctx_dict)

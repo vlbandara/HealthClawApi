@@ -503,7 +503,10 @@ class Ritual(Base):
 
 class Account(Base):
     __tablename__ = "accounts"
-    __table_args__ = (UniqueConstraint("email", name="uq_accounts_email"),)
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_accounts_email"),
+        UniqueConstraint("bot_telegram_id", name="uq_accounts_bot_telegram_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
     email: Mapped[str] = mapped_column(String(254))

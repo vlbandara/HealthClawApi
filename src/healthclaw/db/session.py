@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from alembic.config import Config
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncSession,
@@ -18,9 +19,15 @@ from healthclaw.agent.soul import HEALTHCLAW_IDENTITY, identity_config
 from healthclaw.core.config import get_settings
 from healthclaw.db.models import Base, Identity
 
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
 engine = create_async_engine(settings.database_url, pool_pre_ping=True)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+_ALEMBIC_REVISION_ALIASES = {
+    "0013_natural_onboarding": "0013_ws7_naturalness_pass",
+}
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -63,9 +70,42 @@ async def _has_table(conn: AsyncConnection, table_name: str) -> bool:
     return await conn.run_sync(lambda sync_conn: inspect(sync_conn).has_table(table_name))
 
 
-async def _ensure_postgres_schema(conn: AsyncConnection) -> None:
-    from sqlalchemy import text
+async def _has_column(conn: AsyncConnection, table_name: str, column_name: str) -> bool:
+    return await conn.run_sync(
+        lambda sync_conn: any(
+            column["name"] == column_name for column in inspect(sync_conn).get_columns(table_name)
+        )
+    )
 
+
+async def _reconcile_revision_alias(conn: AsyncConnection) -> str | None:
+    current_revision = await conn.scalar(text("SELECT version_num FROM alembic_version LIMIT 1"))
+    if not current_revision:
+        return None
+
+    replacement = _ALEMBIC_REVISION_ALIASES.get(str(current_revision))
+    if replacement is None:
+        return str(current_revision)
+
+    has_ws7_schema = await _has_column(conn, "users", "timezone_confidence") and await _has_column(
+        conn, "open_loops", "surface_count"
+    )
+    if not has_ws7_schema:
+        return str(current_revision)
+
+    await conn.execute(
+        text("UPDATE alembic_version SET version_num = :version_num"),
+        {"version_num": replacement},
+    )
+    logger.warning(
+        "Reconciled Alembic revision alias from %s to %s for existing schema",
+        current_revision,
+        replacement,
+    )
+    return replacement
+
+
+async def _ensure_postgres_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     await conn.execute(
         text("ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_vec vector(1536)")
@@ -111,7 +151,7 @@ async def init_models() -> None:
             has_version_table = await _has_table(conn, "alembic_version")
             has_app_tables = await _has_table(conn, "users")
             if has_version_table:
-                pass
+                await _reconcile_revision_alias(conn)
             elif has_app_tables:
                 await conn.run_sync(Base.metadata.create_all)
                 await _ensure_postgres_schema(conn)

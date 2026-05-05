@@ -48,6 +48,10 @@ ACTION_OUTPUT_CONTRACT = (
     '{"type":"set_user_timezone","payload":{"tz":"<IANA tz e.g. Asia/Colombo>",'
     '"lat":null,"lon":null,"source":"user_stated","confidence":0.9},'
     '"rationale":"<why>"} — emit when the user tells you their city/country/timezone\n'
+    "  set_quiet_hours: "
+    '{"type":"set_quiet_hours","payload":{"quiet_start":"22:30","quiet_end":"07:00",'
+    '"source":"user_stated","confidence":0.9},"rationale":"<why>"} — '
+    "emit when the user gives a real sleep window or quiet-hours preference\n"
     "  open_topic: "
     '{"type":"open_topic","payload":{"title":"<suggestion made>","kind":"nudge",'
     '"cooldown_hours":12,"max_surfaces":2},"rationale":"<why>"} — '
@@ -116,11 +120,13 @@ async def generate_companion_response(
     active_skills: list[object] | None = None,
     web_search_results: list[dict[str, object]] | None = None,
     motives: list[dict[str, object]] | None = None,
+    onboarding_context: dict[str, object] | None = None,
 ) -> tuple[GenerationResult, dict[str, object]]:
     user_context = user_context or {}
     observable_signals = observable_signals or {}
     streaks = streaks or []
     streaks_surfaced = bool(streaks)
+    onboarding_context = onboarding_context or {}
 
     settings = get_settings()
     client = OpenRouterClient(settings)
@@ -211,6 +217,7 @@ async def generate_companion_response(
                 open_loops=open_loops,
                 safety_category="model_managed",
                 time_truth_block=time_context.time_truth_block() or None,
+                onboarding_cue=_onboarding_cue_block(onboarding_context),
             )
             + skill_block
             + web_sources_block
@@ -257,30 +264,6 @@ async def generate_companion_response(
         return _offline_generation("openrouter_error")
     generation_result, parse_error = _parse_generation_payload(result.content)
 
-    # WS7: Style guardrails — single regen if violations found
-    style_violations: list[str] = []
-    if settings.style_guardrails_enabled and generation_result.message:
-        style_violations = _check_style_violations(
-            generation_result.message,
-            user_content,
-            recent_messages or [],
-        )
-        if style_violations:
-            regen_messages = _build_regen_messages(messages, style_violations)
-            try:
-                regen_result = await client.chat_completion(
-                    regen_messages,
-                    max_tokens=settings.openrouter_chat_max_tokens,
-                    temperature=settings.openrouter_chat_temperature,
-                    metadata={**metadata, "regen": "style_guardrail"},
-                )
-                regen_gen, regen_parse_error = _parse_generation_payload(regen_result.content)
-                if regen_gen.message:
-                    generation_result = regen_gen
-                    parse_error = regen_parse_error
-            except Exception:
-                pass  # Keep original on regen failure
-
     return (
         generation_result,
         {
@@ -291,100 +274,18 @@ async def generate_companion_response(
             "conversation_digest_used": bool(conversation_digest),
             "streaks_surfaced": streaks_surfaced,
             "actions.parse_error": parse_error,
-            "style_violations": style_violations,
+            "onboarding": {
+                "status": str(onboarding_context.get("status") or "inactive"),
+                "missing_fields": list(onboarding_context.get("missing_fields") or []),
+                "recently_asked": bool(onboarding_context.get("recently_asked")),
+                "should_prompt": bool(onboarding_context.get("should_prompt")),
+                "asked": bool(
+                    onboarding_context.get("should_prompt")
+                    and "?" in generation_result.message
+                ),
+            },
         },
     )
-
-
-# ── WS7: Style guardrails ─────────────────────────────────────────────────────
-
-_BANNED_OPENERS = (
-    "alright,",
-    "okay,",
-    "sure,",
-    "got it,",
-    "of course,",
-    "good to hear from you",
-    "good morning",
-    "good evening",
-    "good afternoon",
-    "good night",
-)
-
-_BREVITY_REGEN_INSTRUCTION = (
-    "\n\n[STYLE CORRECTION: The user's last message was very short. "
-    "Please keep your reply to 1-2 short sentences. No questions.]"
-)
-
-_OPENER_REGEN_INSTRUCTION = (
-    "\n\n[STYLE CORRECTION: Your reply started with a banned filler phrase. "
-    "Rewrite it — start directly with the substance. "
-    "Never begin with: Alright, Okay, Sure, Got it, Of course, Good to hear from you, "
-    "Good morning, Good evening, Good afternoon.]"
-)
-
-_Q_STACK_REGEN_INSTRUCTION = (
-    "\n\n[STYLE CORRECTION: Your reply contained more than one question mark. "
-    "Keep at most one question per reply. Rewrite with at most one question.]"
-)
-
-
-def _check_style_violations(
-    message: str,
-    user_content: str,
-    recent_messages: list[dict[str, object]],
-) -> list[str]:
-    """Return list of style violation codes found in the generated message."""
-    violations: list[str] = []
-    if not message:
-        return violations
-
-    # Check banned opener (startswith check, no regex)
-    first_chars = message.lstrip()[:40].lower()
-    for banned in _BANNED_OPENERS:
-        if first_chars.startswith(banned):
-            violations.append("banned_opener")
-            break
-
-    # Check Q-stacking (only mechanical ? count — not semantic)
-    if message.count("?") > 1:
-        violations.append("q_stack")
-
-    # Check brevity: if user message is ≤ 3 words, reply should be ≤ 280 chars
-    user_word_count = len(user_content.split())
-    if user_word_count <= 3 and len(message) > 280:
-        violations.append("brevity")
-
-    return violations
-
-
-def _build_regen_messages(
-    original_messages: list[dict[str, object]],
-    violations: list[str],
-) -> list[dict[str, object]]:
-    """Append correction instructions to the last user message for a single regen."""
-    instruction_parts: list[str] = []
-    if "banned_opener" in violations:
-        instruction_parts.append(_OPENER_REGEN_INSTRUCTION.strip())
-    if "q_stack" in violations:
-        instruction_parts.append(_Q_STACK_REGEN_INSTRUCTION.strip())
-    if "brevity" in violations:
-        instruction_parts.append(_BREVITY_REGEN_INSTRUCTION.strip())
-
-    if not instruction_parts:
-        return original_messages
-
-    regen = list(original_messages)
-    last_user = next(
-        (i for i in reversed(range(len(regen))) if regen[i]["role"] == "user"),
-        None,
-    )
-    if last_user is not None:
-        regen[last_user] = {
-            **regen[last_user],
-            "content": str(regen[last_user]["content"]) + "\n\n" + "\n".join(instruction_parts),
-        }
-    return regen
 
 
 def _parse_generation_payload(raw_content: str) -> tuple[GenerationResult, bool]:
@@ -426,6 +327,40 @@ def _strip_json_fence(content: str) -> str:
 def _trust_level(user_context: dict[str, object]) -> float | None:
     value = user_context.get("trust_level")
     return float(value) if isinstance(value, int | float) else None
+
+
+def _onboarding_cue_block(onboarding_context: dict[str, object]) -> str | None:
+    status = str(onboarding_context.get("status") or "")
+    if status != "active":
+        return None
+    missing_fields = list(onboarding_context.get("missing_fields") or [])
+    missing_fields_text = ", ".join(missing_fields) if missing_fields else "none"
+    meaningful_turns = int(onboarding_context.get("meaningful_user_turns") or 0)
+    days_since_signup = int(onboarding_context.get("days_since_signup") or 0)
+    recently_asked = str(bool(onboarding_context.get("recently_asked"))).lower()
+    current_turn_has_space = str(bool(onboarding_context.get("current_turn_has_space"))).lower()
+    should_prompt = str(bool(onboarding_context.get("should_prompt"))).lower()
+    return (
+        "# Onboarding Context\n\n"
+        "The user is in the first-days onboarding phase.\n"
+        f"- missing_fields: {missing_fields_text}\n"
+        f"- meaningful_user_turns: {meaningful_turns}\n"
+        f"- days_since_signup: {days_since_signup}\n"
+        f"- recently_asked: {recently_asked}\n"
+        f"- current_turn_has_space: {current_turn_has_space}\n"
+        f"- should_prompt: {should_prompt}\n"
+        "- Answer the user's actual turn first.\n"
+        "- Ask at most one onboarding question, and only if should_prompt is true.\n"
+        "- Ask narrow, natural questions in this order: timezone/location,"
+        " then quiet hours, then current support focus.\n"
+        "- Never ask for their name directly as onboarding.\n"
+        "- If the user tells you a real sleep window or quiet-hours preference,"
+        " emit set_quiet_hours.\n"
+        "- If the user reveals what they want help with, capture it as a"
+        " durable goal or profile memory proposal.\n"
+        "- If the turn feels distressed, overloaded, or purely utilitarian,"
+        " do not spend it on onboarding."
+    )
 
 
 def _offline_generation(reason: str) -> tuple[GenerationResult, dict[str, object]]:

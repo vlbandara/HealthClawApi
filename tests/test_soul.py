@@ -13,6 +13,16 @@ def test_system_prompt_uses_companion_brief_and_examples() -> None:
     assert "Put the phone down for ten minutes" in prompt
     assert "call or text 988 now" in prompt
     assert "Chest pain is not something to guess through over chat" in prompt
+    assert "## Voice contract" in prompt
+    assert "Lead with one useful move." in prompt
+    assert "Keep most replies to 1-4 short lines." in prompt
+    assert "Steady direct" in prompt
+    assert "Warm steady" in prompt
+    assert "Lightly wry" in prompt
+    assert 'Do not open with filler: "Alright,"' in prompt
+    assert 'Do not perform synthetic empathy: "I understand your concern"' in prompt
+    assert "## Time and greetings" in prompt
+    assert "## Reading distress and crisis" in prompt
 
 
 def test_system_prompt_surfaces_observable_context_without_tone_bands() -> None:

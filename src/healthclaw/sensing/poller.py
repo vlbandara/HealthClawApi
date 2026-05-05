@@ -149,14 +149,20 @@ async def poll_hydration_for_user(user: User, session: AsyncSession) -> bool:
     weather_severe = False
 
     if user.home_lat is not None and user.home_lon is not None:
-        from healthclaw.integrations.weather import get_weather_provider
+        from healthclaw.integrations.weather import (
+            build_weather_salience_context,
+            get_weather_provider,
+        )
+
         provider = get_weather_provider()
         snapshot = await provider.get_current(user.home_lat, user.home_lon)
         if snapshot is not None:
-            if snapshot.is_heat_stress:
+            weather_context = await build_weather_salience_context(user, now=now, provider=provider)
+            normal = weather_context.seasonal_normal if weather_context.has_heat_baseline else None
+            if normal is not None and snapshot.feels_like_c >= normal.heat_stress_threshold_c:
                 severity = max(severity, 0.7)
                 weather_severe = True
-            elif snapshot.temp_c > 28:
+            elif normal is not None and snapshot.feels_like_c >= normal.apparent_temp_mean_c:
                 severity = max(severity, 0.4)
 
     # Check last water log

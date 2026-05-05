@@ -32,12 +32,18 @@ services:
       REDIS_URL: redis://redis:6379/0
       AUTO_CREATE_DB: "true"
       API_KEY: dev-healthclaw-key
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      FERNET_KEY: ${FERNET_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-session-secret}
+      MAGIC_LINK_CALLBACK_URL: ${MAGIC_LINK_CALLBACK_URL:-http://localhost:8000/auth/callback}
+      MULTI_TENANT_MODE: ${MULTI_TENANT_MODE:-true}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_CHAT_MODEL: ${OPENROUTER_CHAT_MODEL:-google/gemini-2.5-flash-lite}
-      OPENROUTER_CHAT_FALLBACK_MODELS: ${OPENROUTER_CHAT_FALLBACK_MODELS:-google/gemini-2.0-flash-lite-001,openai/gpt-5.4-nano}
+      OPENROUTER_CHAT_FALLBACK_MODELS: ${OPENROUTER_CHAT_FALLBACK_MODELS:-google/gemini-2.0-flash-lite-001}
       OPENROUTER_TRANSCRIBE_MODEL: ${OPENROUTER_TRANSCRIBE_MODEL:-mistralai/voxtral-small-24b-2507}
+      INNER_SYNTH_MODEL: ${INNER_SYNTH_MODEL:-google/gemini-2.5-flash-lite}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Healthclaw}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
@@ -69,11 +75,17 @@ services:
       REDIS_URL: redis://redis:6379/0
       AUTO_CREATE_DB: "false"
       API_KEY: dev-healthclaw-key
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      FERNET_KEY: ${FERNET_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-change-this-local-session-secret}
+      MAGIC_LINK_CALLBACK_URL: ${MAGIC_LINK_CALLBACK_URL:-http://localhost:8000/auth/callback}
+      MULTI_TENANT_MODE: ${MULTI_TENANT_MODE:-true}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_CHAT_MODEL: ${OPENROUTER_CHAT_MODEL:-google/gemini-2.5-flash-lite}
-      OPENROUTER_CHAT_FALLBACK_MODELS: ${OPENROUTER_CHAT_FALLBACK_MODELS:-google/gemini-2.0-flash-lite-001,openai/gpt-5.4-nano}
+      OPENROUTER_CHAT_FALLBACK_MODELS: ${OPENROUTER_CHAT_FALLBACK_MODELS:-google/gemini-2.0-flash-lite-001}
       OPENROUTER_TRANSCRIBE_MODEL: ${OPENROUTER_TRANSCRIBE_MODEL:-mistralai/voxtral-small-24b-2507}
+      INNER_SYNTH_MODEL: ${INNER_SYNTH_MODEL:-google/gemini-2.5-flash-lite}
       OPENROUTER_DECISION_MODEL: ${OPENROUTER_DECISION_MODEL:-google/gemini-2.5-flash-lite}
       OPENROUTER_DREAM_MODEL: ${OPENROUTER_DREAM_MODEL:-google/gemini-2.5-flash-lite}
       OPENROUTER_EMBEDDING_MODEL: ${OPENROUTER_EMBEDDING_MODEL:-openai/text-embedding-3-small}

@@ -27,6 +27,7 @@ class AgentState(TypedDict, total=False):
     memory_documents: dict[str, str]
     thread_summary: str
     relationship_signals: list[str]
+    onboarding: dict[str, Any]
     # WS6: new fields
     motives: list[dict[str, Any]]                   # active motives for this user
     active_skills: list[Any]                         # activated Skill objects

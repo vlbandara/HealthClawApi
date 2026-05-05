@@ -12,9 +12,8 @@ def test_default_chat_models_use_natural_companion_tier(monkeypatch) -> None:
     client = OpenRouterClient(Settings(_env_file=None))
 
     assert client.chat_models() == [
-        "moonshotai/kimi-k2.6",
-        "minimax/minimax-m2.7",
-        "openai/gpt-5.4-mini",
+        "google/gemini-2.5-flash-lite",
+        "google/gemini-2.0-flash-lite-001",
     ]
 
 
@@ -73,6 +72,50 @@ async def test_openrouter_chat_falls_back_to_next_model(monkeypatch) -> None:
     assert result.content == "fallback reply"
     assert result.model == "fallback/model"
     assert result.usage["total_tokens"] == 12
+
+
+async def test_openrouter_chat_falls_back_after_explicit_model_failure(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, headers: dict, json: dict) -> FakeResponse:
+            calls.append(json["model"])
+            if json["model"] == "explicit/model":
+                return FakeResponse({"choices": [{"message": {"content": ""}}]})
+            return FakeResponse(
+                {
+                    "model": json["model"],
+                    "choices": [{"message": {"content": "fallback reply"}}],
+                    "usage": {"total_tokens": 9},
+                }
+            )
+
+    monkeypatch.setattr("healthclaw.integrations.openrouter.httpx.AsyncClient", FakeAsyncClient)
+    client = OpenRouterClient(
+        Settings(
+            openrouter_api_key="test-key",
+            openrouter_chat_model="primary/model",
+            openrouter_chat_fallback_models="fallback/model",
+        )
+    )
+
+    result = await client.chat_completion(
+        [{"role": "user", "content": "hello"}],
+        model="explicit/model",
+    )
+
+    assert calls == ["explicit/model", "primary/model"]
+    assert result.content == "fallback reply"
+    assert result.model == "primary/model"
 
 
 async def test_openrouter_transcription_encodes_audio(monkeypatch) -> None:
