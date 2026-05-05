@@ -55,3 +55,34 @@ async def test_runtime_error_sets_parse_error_and_returns_mutations(
 
     assert isinstance(result, list)
     get_settings.cache_clear()
+
+
+async def test_memory_extractor_accepts_json_fenced_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=(
+                "```json\n"
+                '[{"kind":"profile","key":"location","value":{"text":"Sri Lanka"},'
+                '"confidence":0.9,"reason":"User stated country","layer":"profile"}]'
+                "\n```"
+            ),
+            model="test",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        )
+
+    with patch(
+        "healthclaw.memory.extractors.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    ):
+        result = await extract_memory_mutations_enriched(_CONTENT)
+
+    assert len(result) == 1
+    assert result[0].kind == "profile"
+    assert result[0].key == "location"
+    assert result[0].value == {"text": "Sri Lanka"}
+    get_settings.cache_clear()

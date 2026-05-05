@@ -16,6 +16,7 @@ from healthclaw.schemas.actions import (
     CreateOpenLoopPayload,
     CreateReminderPayload,
     OpenTopicPayload,
+    SetQuietHoursPayload,
     SetUserTimezonePayload,
 )
 
@@ -111,6 +112,7 @@ async def generate_response(state: AgentState) -> AgentState:
         observable_signals=state.get("observable_signals", {}),
         thread_summary=state.get("thread_summary"),
         relationship_signals=state.get("relationship_signals"),
+        onboarding_context=state.get("onboarding", {}),
     )
     state["response"] = generation.message
     state["actions"] = list(generation.actions)
@@ -207,6 +209,13 @@ async def execute_actions(state: AgentState) -> AgentState:
             try:
                 tz_payload = SetUserTimezonePayload.model_validate(payload)
                 payload = tz_payload.model_dump(mode="json")
+            except ValidationError:
+                dropped.append({"type": action_type, "reason": "payload_invalid"})
+                continue
+        elif action_type == "set_quiet_hours":
+            try:
+                quiet_payload = SetQuietHoursPayload.model_validate(payload)
+                payload = quiet_payload.model_dump(mode="json")
             except ValidationError:
                 dropped.append({"type": action_type, "reason": "payload_invalid"})
                 continue

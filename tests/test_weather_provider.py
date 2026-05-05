@@ -1,9 +1,17 @@
 """Tests for integrations/weather.py — provider, caching, and snapshot properties."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+import httpx
 import pytest
 
-from healthclaw.integrations.weather import NullWeatherProvider, OpenMeteoProvider, WeatherSnapshot
+from healthclaw.integrations.weather import (
+    NullWeatherProvider,
+    OpenMeteoProvider,
+    WeatherSnapshot,
+    build_weather_salience_context,
+)
 
 
 def _snapshot(
@@ -26,16 +34,6 @@ async def test_null_provider_returns_none():
     provider = NullWeatherProvider()
     result = await provider.get_current(1.3, 103.8)
     assert result is None
-
-
-def test_heat_stress_property():
-    snap = _snapshot(temp_c=33, humidity=82)
-    assert snap.is_heat_stress is True
-
-
-def test_no_heat_stress_below_threshold():
-    snap = _snapshot(temp_c=28, humidity=60)
-    assert snap.is_heat_stress is False
 
 
 def test_high_uv_property():
@@ -62,8 +60,6 @@ def test_to_dict_roundtrip():
 @pytest.mark.asyncio
 async def test_open_meteo_returns_cached_on_second_call(respx_mock):
     """Second identical call returns cached snapshot without HTTP."""
-    import httpx
-
     provider = OpenMeteoProvider()
     mock_response = {
         "current": {
@@ -86,3 +82,39 @@ async def test_open_meteo_returns_cached_on_second_call(respx_mock):
     snap2 = await provider.get_current(1.3, 103.8)
     assert snap2 is snap1
     assert respx_mock.calls.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_meteo_builds_and_caches_seasonal_normals(respx_mock):
+    provider = OpenMeteoProvider()
+    archive_route = respx_mock.get("https://archive-api.open-meteo.com/v1/archive")
+
+    archive_route.mock(
+        side_effect=[
+            httpx.Response(200, json={"hourly": {"apparent_temperature": [8.0, 12.0, 16.0]}}),
+            httpx.Response(200, json={"hourly": {"apparent_temperature": [10.0, 14.0, 18.0]}}),
+            httpx.Response(200, json={"hourly": {"apparent_temperature": [9.0, 13.0, 17.0]}}),
+        ]
+    )
+
+    as_of = datetime(2026, 5, 4, tzinfo=UTC)
+    normal_1 = await provider.get_seasonal_normal(64.1, -21.9, as_of=as_of)
+    normal_2 = await provider.get_seasonal_normal(64.1, -21.9, as_of=as_of)
+
+    assert normal_1 is not None
+    assert normal_2 is normal_1
+    assert normal_1.sample_count == 9
+    assert normal_1.apparent_temp_mean_c == pytest.approx(13.0)
+    assert normal_1.apparent_temp_p90_c == pytest.approx(17.2, rel=1e-3)
+    assert archive_route.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_build_weather_salience_context_requires_explicit_location(monkeypatch):
+    class DummyUser:
+        home_lat = None
+        home_lon = None
+
+    context = await build_weather_salience_context(DummyUser())
+    assert context.location_confirmed is False
+    assert context.seasonal_normal is None

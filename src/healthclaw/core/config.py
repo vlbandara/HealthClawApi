@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     free_tier_monthly_messages: int = 500
     resend_api_key: str | None = None
     magic_link_from_email: str = "Healthclaw <noreply@healthclaw.local>"
-    magic_link_callback_url: str = "http://localhost:3000/auth/callback"
+    magic_link_callback_url: str = "http://localhost:8000/auth/callback"
     openrouter_api_key: str | None = None
-    openrouter_chat_model: str = "moonshotai/kimi-k2.6"
-    openrouter_chat_fallback_models: str = "minimax/minimax-m2.7,openai/gpt-5.4-mini"
+    openrouter_chat_model: str = "google/gemini-2.5-flash-lite"
+    openrouter_chat_fallback_models: str = "google/gemini-2.0-flash-lite-001"
     openrouter_chat_max_tokens: int = 700
     openrouter_chat_temperature: float = 0.75
     openrouter_transcribe_model: str = "mistralai/voxtral-small-24b-2507"
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
 
     # WS6: inner synthesizer / anticipation
     inner_synthesizer_enabled: bool = False
-    inner_synth_model: str = "moonshotai/kimi-k2.6"
+    inner_synth_model: str = "google/gemini-2.5-flash-lite"
     inner_synth_max_tokens: int = 400
     inner_synth_temperature: float = 0.6
     anticipation_enabled: bool = False
@@ -113,7 +113,6 @@ class Settings(BaseSettings):
     web_search_health_domains_only: bool = True
 
     # WS7: naturalness pass
-    style_guardrails_enabled: bool = True
     timezone_elicitation_enabled: bool = True
     open_topic_default_cooldown_hours: int = 12
     open_topic_default_max_surfaces: int = 2

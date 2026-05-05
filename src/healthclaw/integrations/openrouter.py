@@ -35,6 +35,27 @@ class OpenRouterClient:
         ]
         return [self.settings.openrouter_chat_model, *fallbacks]
 
+    def completion_models(self, model: str | None = None) -> list[str]:
+        """Return the ordered candidate list for a chat completion attempt.
+
+        When a caller requests an explicit model, try that first but still allow the
+        client-wide fallback chain to recover from intermittent empty responses or
+        provider-level failures.
+        """
+        models: list[str] = []
+        if model and model.strip():
+            models.append(model.strip())
+        models.extend(self.chat_models())
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for candidate in models:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            deduped.append(candidate)
+        return deduped
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.settings.openrouter_api_key}",
@@ -59,7 +80,7 @@ class OpenRouterClient:
         if not self.enabled:
             raise RuntimeError("OpenRouter API key is not configured")
 
-        model_list = [model] if model else self.chat_models()
+        model_list = self.completion_models(model)
         last_error: Exception | None = None
         attempt_index = 0
         async with start_span("openrouter.chat", attributes=metadata) as span:

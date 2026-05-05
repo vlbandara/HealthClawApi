@@ -7,6 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from healthclaw.agent.context_harness import ContextHarness
 from healthclaw.agent.graph import agent_graph
+from healthclaw.agent.onboarding import (
+    build_onboarding_context,
+    onboarding_status_after_turn,
+)
 from healthclaw.agent.thread_digest import compact_thread_summary
 from healthclaw.agent.time_context import build_time_context
 from healthclaw.core.config import get_settings
@@ -48,6 +52,7 @@ from healthclaw.schemas.actions import (
     CreateOpenLoopPayload,
     CreateReminderPayload,
     OpenTopicPayload,
+    SetQuietHoursPayload,
     SetUserTimezonePayload,
 )
 from healthclaw.schemas.events import ConversationEvent
@@ -257,10 +262,25 @@ class ConversationService:
             exclude_message_id=user_message.id,
             limit=self.settings.recent_message_context_limit,
         )
+        recent_message_rows = await self._recent_message_rows(user.id, limit=40)
+        all_memories = [
+            self._memory_payload(memory)
+            for memory in await memory_service.list_memories(user.id)
+        ]
         memory_documents = await MarkdownMemoryService(self.session).documents_for_prompt(user)
+        onboarding_context = build_onboarding_context(
+            user=user,
+            memories=all_memories,
+            recent_messages=recent_message_rows,
+            current_content=event.content,
+            current_content_type=event.content_type,
+            is_command=is_command,
+            now=now,
+        )
         user_context = {
             "id": user.id,
             "timezone": user.timezone,
+            "timezone_confidence": float(user.timezone_confidence or 0.0),
             "quiet_start": user.quiet_start,
             "quiet_end": user.quiet_end,
             "proactive_enabled": user.proactive_enabled,
@@ -341,6 +361,7 @@ class ConversationService:
                 "memory_documents": selected_memory_documents,
                 "thread_summary": selected_thread_summary,
                 "relationship_signals": selected_relationship_signals,
+                "onboarding": onboarding_context.to_dict(),
                 "trace_metadata": {
                     "trace_id": trace_id,
                     "thread_id": thread.id,
@@ -437,6 +458,20 @@ class ConversationService:
                     kind=mutation.kind,
                 )
         await MarkdownMemoryService(self.session).refresh_for_user(user)
+        updated_memories = [
+            self._memory_payload(memory) for memory in await memory_service.list_memories(user.id)
+        ]
+        updated_recent_rows = await self._recent_message_rows(user.id, limit=40)
+        final_onboarding_status = onboarding_status_after_turn(
+            user=user,
+            memories=updated_memories,
+            recent_messages=updated_recent_rows,
+            now=utc_now(),
+        )
+        user.onboarding_status = final_onboarding_status
+        assistant_message.metadata_["generation"].setdefault("onboarding", {})["next_status"] = (
+            final_onboarding_status
+        )
         await heartbeat_service.ensure_refresh_jobs(user.id)
         await self._update_thread_summary(thread, event.content, assistant_message.content, user.id)
         await self._record_usage(user, state.get("trace_metadata", {}).get("generation", {}))
@@ -637,6 +672,35 @@ class ConversationService:
                         )
                     except Exception as tz_err:
                         dropped.append({"type": action_type, "reason": f"invalid_tz: {tz_err}"})
+                elif action_type == "set_quiet_hours":
+                    quiet_action = SetQuietHoursPayload.model_validate(payload)
+                    user.quiet_start = quiet_action.quiet_start
+                    user.quiet_end = quiet_action.quiet_end
+                    state.setdefault("memory_mutations", []).append(
+                        {
+                            "kind": "profile",
+                            "key": "quiet_hours_preference",
+                            "value": {
+                                "text": (
+                                    "Quiet hours "
+                                    f"{quiet_action.quiet_start}-{quiet_action.quiet_end}"
+                                ),
+                                "quiet_start": quiet_action.quiet_start,
+                                "quiet_end": quiet_action.quiet_end,
+                            },
+                            "confidence": quiet_action.confidence,
+                            "reason": "User stated their preferred sleep or quiet-hours window.",
+                            "layer": "profile",
+                            "metadata": {"onboarding_field": "quiet_hours"},
+                        }
+                    )
+                    executed.append(
+                        {
+                            "type": action_type,
+                            "quiet_start": quiet_action.quiet_start,
+                            "quiet_end": quiet_action.quiet_end,
+                        }
+                    )
                 elif action_type == "open_topic":
                     # WS7: track agent's suggestion as an open topic with cooldown
                     from datetime import timedelta as _timedelta
@@ -733,11 +797,11 @@ class ConversationService:
         command = command.split("@", 1)[0].lower()
         memory_service = MemoryService(self.session, self._embedding_client())
         if command == "/start":
-            user.onboarding_status = "active"
-            response = (
-                "Hey, I am Healthclaw. I will keep this simple and get to know you as we go. "
-                "What kind of day are you having?"
-            )
+            user_message.metadata_ = {
+                **(user_message.metadata_ or {}),
+                "command": command,
+            }
+            return None
         elif command == "/settings":
             response = (
                 f"Timezone: {user.timezone}\n"
@@ -949,6 +1013,7 @@ class ConversationService:
             "last_accessed_at": memory.last_accessed_at,
             "created_at": memory.created_at,
             "updated_at": memory.updated_at,
+            "metadata": getattr(memory, "metadata_", {}) or {},
         }
 
     def _context_harness_mode(self) -> str:
@@ -1116,6 +1181,23 @@ class ConversationService:
             payload.append({"role": message.role, "content": content})
             total_chars = next_total
         return payload
+
+    async def _recent_message_rows(
+        self,
+        user_id: str,
+        *,
+        limit: int = 40,
+    ) -> list[Message]:
+        result = await self.session.execute(
+            select(Message)
+            .where(
+                Message.user_id == user_id,
+                Message.role.in_(["user", "assistant"]),
+            )
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        return list(reversed(list(result.scalars())))
 
     async def _soul_preferences_payload(self, user_id: str) -> dict:
         result = await self.session.execute(

@@ -115,6 +115,58 @@ async def test_action_executor_no_action_no_reminder_row(
     get_settings.cache_clear()
 
 
+async def test_action_executor_set_quiet_hours_persists_user_and_profile_memory(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=(
+                '{"message":"Got it. I will treat 23:00 to 07:00 as your quiet window.",'
+                '"actions":[{"type":"set_quiet_hours","payload":{"quiet_start":"23:00",'
+                '"quiet_end":"07:00","source":"user_stated","confidence":0.95},'
+                '"rationale":"User gave their usual sleep window."}],'
+                '"memory_proposals":[]}'
+            ),
+            model="moonshotai/kimi-k2.6",
+            usage={"total_tokens": 20},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+    response = await client.post(
+        "/v1/conversations/u-action-quiet/messages",
+        json={"content": "I usually sleep around 11 and wake at 7."},
+    )
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        user = await session.get(User, "u-action-quiet")
+        memories = list(
+            (
+                await session.execute(
+                    select(Memory).where(
+                        Memory.user_id == "u-action-quiet",
+                        Memory.kind == "profile",
+                        Memory.key == "quiet_hours_preference",
+                    )
+                )
+            ).scalars()
+        )
+
+    assert user is not None
+    assert user.quiet_start == "23:00"
+    assert user.quiet_end == "07:00"
+    assert len(memories) == 1
+    assert memories[0].value["quiet_start"] == "23:00"
+    assert memories[0].metadata_.get("onboarding_field") == "quiet_hours"
+    get_settings.cache_clear()
+
+
 async def test_action_executor_invalid_json_falls_back_without_crash(
     client: AsyncClient, monkeypatch
 ) -> None:

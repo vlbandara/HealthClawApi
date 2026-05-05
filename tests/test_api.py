@@ -10,6 +10,7 @@ from healthclaw.db.models import (
     AgentCheckpoint,
     HeartbeatJob,
     InboundEvent,
+    Memory,
     Message,
     OpenLoop,
     Reminder,
@@ -336,19 +337,210 @@ async def test_crisis_shaped_message_still_uses_model(
     get_settings.cache_clear()
 
 
-async def test_telegram_start_uses_natural_first_chat_copy(client: AsyncClient) -> None:
-    response = await client.post(
+async def test_telegram_start_uses_companion_path_with_first_contact_cue(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    called = {"count": 0}
+    captured_system_prompts: list[str] = []
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        called["count"] += 1
+        captured_system_prompts.append(str(messages[0]["content"]))
+        user_prompt = str(messages[-1]["content"])
+        if "# Current User Message\n\n/start" in user_prompt:
+            return OpenRouterResult(
+                content=json.dumps({
+                    "message": "Hi. I am Healthclaw. What kind of day are you having?",
+                    "actions": [],
+                    "memory_proposals": [],
+                }),
+                model="google/gemini-2.5-flash-lite",
+                usage={"total_tokens": 12},
+            )
+        return OpenRouterResult(
+            content=json.dumps({
+                "message": "We can pick it up from here.",
+                "actions": [],
+                "memory_proposals": [],
+            }),
+            model="google/gemini-2.5-flash-lite",
+            usage={"total_tokens": 10},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+
+    first = await client.post(
         "/v1/conversations/u-start/messages",
         json={"content": "/start", "channel": "telegram"},
     )
+    second = await client.post(
+        "/v1/conversations/u-start/messages",
+        json={"content": "hello again", "channel": "telegram"},
+    )
 
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert called["count"] == 2
+    assert first.json()["safety_category"] == "wellness"
+    assert first.json()["response"] == "Hi. I am Healthclaw. What kind of day are you having?"
+    assert "# Onboarding Context" in captured_system_prompts[0]
+    assert "missing_fields: timezone, quiet_hours, support_focus" in captured_system_prompts[0]
+    assert "# Onboarding Context" in captured_system_prompts[1]
+    assert "should_prompt: false" in captured_system_prompts[1]
+    get_settings.cache_clear()
+
+
+async def test_telegram_start_followup_can_persist_timezone_action(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        user_prompt = str(messages[-1]["content"])
+        if "Sri Lanka" in user_prompt:
+            return OpenRouterResult(
+                content=json.dumps({
+                    "message": "Good. I will use Sri Lanka time from here.",
+                    "actions": [
+                        {
+                            "type": "set_user_timezone",
+                            "payload": {
+                                "tz": "Asia/Colombo",
+                                "lat": None,
+                                "lon": None,
+                                "source": "user_stated",
+                                "confidence": 0.95,
+                            },
+                            "rationale": "User said they are in Sri Lanka.",
+                        }
+                    ],
+                    "memory_proposals": [],
+                }),
+                model="google/gemini-2.5-flash-lite",
+                usage={"total_tokens": 16},
+            )
+        return OpenRouterResult(
+            content=json.dumps({
+                "message": "Hi. I am Healthclaw. What kind of day are you having?",
+                "actions": [],
+                "memory_proposals": [],
+            }),
+            model="google/gemini-2.5-flash-lite",
+            usage={"total_tokens": 12},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+
+    first = await client.post(
+        "/v1/conversations/u-start-tz/messages",
+        json={"content": "/start", "channel": "telegram"},
+    )
+    second = await client.post(
+        "/v1/conversations/u-start-tz/messages",
+        json={"content": "I'm in Sri Lanka", "channel": "telegram"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["response"] == "Good. I will use Sri Lanka time from here."
+
+    async with SessionLocal() as session:
+        user = await session.get(User, "u-start-tz")
+
+    assert user is not None
+    assert user.timezone == "Asia/Colombo"
+    assert user.timezone_confidence == 0.95
+    get_settings.cache_clear()
+
+
+async def test_onboarding_completes_when_timezone_quiet_hours_and_goal_are_present(
+    client: AsyncClient, monkeypatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    async with SessionLocal() as session:
+        user = User(
+            id="u-onboarding-complete",
+            timezone="UTC",
+            quiet_start="22:00",
+            quiet_end="07:00",
+            onboarding_status="active",
+        )
+        session.add(user)
+        session.add(
+            Memory(
+                user_id=user.id,
+                kind="profile",
+                key="quiet_hours_preference",
+                layer="profile",
+                value={"quiet_start": "22:00", "quiet_end": "07:00"},
+                semantic_text="Quiet hours 22:00-07:00",
+                confidence=0.95,
+                metadata_={"onboarding_field": "quiet_hours"},
+                source_message_ids=[],
+            )
+        )
+        await session.commit()
+
+    async def fake_chat_completion(self, messages, **kwargs):
+        return OpenRouterResult(
+            content=json.dumps({
+                "message": "Good. I will use Sri Lanka time and keep sleep at the center.",
+                "actions": [
+                    {
+                        "type": "set_user_timezone",
+                        "payload": {
+                            "tz": "Asia/Colombo",
+                            "lat": None,
+                            "lon": None,
+                            "source": "user_stated",
+                            "confidence": 0.95,
+                        },
+                        "rationale": "User said they are in Sri Lanka.",
+                    }
+                ],
+                "memory_proposals": [
+                    {
+                        "kind": "goal",
+                        "key": "current_goal",
+                        "value": {"text": "sleep better this week"},
+                        "confidence": 0.9,
+                        "reason": "User said sleep is the main thing they want help with.",
+                        "layer": "goal",
+                    }
+                ],
+            }),
+            model="google/gemini-2.5-flash-lite",
+            usage={"total_tokens": 18},
+        )
+
+    monkeypatch.setattr(
+        "healthclaw.integrations.openrouter.OpenRouterClient.chat_completion",
+        fake_chat_completion,
+    )
+    response = await client.post(
+        "/v1/conversations/u-onboarding-complete/messages",
+        json={"content": "I'm in Sri Lanka and I mainly need help with sleep."},
+    )
     assert response.status_code == 200
-    body = response.json()
-    assert body["safety_category"] == "command"
-    assert "Healthclaw" in body["response"]
-    assert "What kind of day are you having?" in body["response"]
-    assert "BiomeClaw" not in body["response"]
-    assert "sleep, training, recovery" not in body["response"]
+
+    async with SessionLocal() as session:
+        user = await session.get(User, "u-onboarding-complete")
+
+    assert user is not None
+    assert user.onboarding_status == "complete"
+    assert user.timezone == "Asia/Colombo"
+    get_settings.cache_clear()
 
 
 async def test_web_slash_memory_uses_command_handler(

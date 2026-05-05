@@ -44,7 +44,7 @@ async def test_llm_extraction_returns_empty_on_disabled_client(monkeypatch) -> N
     from healthclaw.core.config import get_settings
 
     get_settings.cache_clear()
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
     get_settings.cache_clear()
 
     mutations = await extract_memory_mutations_enriched("I want to sleep by 10pm.")

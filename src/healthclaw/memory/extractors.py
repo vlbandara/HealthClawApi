@@ -42,7 +42,7 @@ async def extract_memory_mutations_enriched(content: str) -> list[MemoryMutation
                 temperature=0,
                 metadata={"model_role": "extract"},
             )
-            raw_items = json.loads(result.content)
+            raw_items = json.loads(_strip_json_fence(result.content.strip()))
         except (RuntimeError, json.JSONDecodeError, TypeError, ValueError):
             from opentelemetry import trace as otel_trace
 
@@ -100,3 +100,18 @@ def _default_layer(kind: str) -> str:
         "episode": "episode",
         "preference": "preference",
     }.get(kind, "durable")
+
+
+def _strip_json_fence(content: str) -> str:
+    if not content.startswith("```"):
+        return content
+    body = content
+    if body.startswith("```json"):
+        body = body[len("```json") :]
+    elif body.startswith("```JSON"):
+        body = body[len("```JSON") :]
+    else:
+        body = body[3:]
+    if body.endswith("```"):
+        body = body[:-3]
+    return body.strip()

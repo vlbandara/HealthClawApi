@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from healthclaw.inner.salience import compute_salience
+from healthclaw.integrations.weather import SeasonalWeatherNormal, WeatherSalienceContext
 
 
 def _sig(kind: str, value: dict[str, Any]) -> Any:
@@ -20,6 +21,21 @@ def _time_ctx(**overrides: Any) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def _weather_context(*, threshold: float, mean: float = 0.0) -> WeatherSalienceContext:
+    return WeatherSalienceContext(
+        location_confirmed=True,
+        seasonal_normal=SeasonalWeatherNormal(
+            lat=0.0,
+            lon=0.0,
+            seasonal_window_start="2023-04-19",
+            seasonal_window_end="2025-05-19",
+            apparent_temp_mean_c=mean,
+            apparent_temp_p90_c=threshold,
+            sample_count=72,
+        ),
+    )
 
 
 # ── Weather rules ────────────────────────────────────────────────────────────
@@ -48,6 +64,46 @@ def test_mild_weather_scores_zero() -> None:
     sig = _sig("weather", {"temp_c": 22, "humidity_pct": 60, "uv_index": 4, "wmo_code": 1})
     result = compute_salience([sig], _time_ctx())
     assert result.score == 0.0
+
+
+def test_weather_heat_stress_uses_location_normal_for_cool_climate() -> None:
+    sig = _sig(
+        "weather",
+        {"temp_c": 18, "feels_like_c": 19, "humidity_pct": 65, "uv_index": 4, "wmo_code": 1},
+    )
+    result = compute_salience([sig], _time_ctx(), weather_context=_weather_context(threshold=17.0))
+    assert result.breakdown.get("weather_heat_stress") == 0.4
+
+
+def test_weather_heat_stress_does_not_fire_when_ordinary_for_tropical_climate() -> None:
+    sig = _sig(
+        "weather",
+        {"temp_c": 31, "feels_like_c": 32, "humidity_pct": 78, "uv_index": 4, "wmo_code": 1},
+    )
+    result = compute_salience([sig], _time_ctx(), weather_context=_weather_context(threshold=34.0))
+    assert "weather_heat_stress" not in result.breakdown
+
+
+def test_weather_heat_stress_skips_when_location_context_lacks_normals() -> None:
+    sig = _sig(
+        "weather",
+        {"temp_c": 34, "feels_like_c": 37, "humidity_pct": 85, "uv_index": 4, "wmo_code": 1},
+    )
+    result = compute_salience(
+        [sig],
+        _time_ctx(),
+        weather_context=WeatherSalienceContext(location_confirmed=False),
+    )
+    assert "weather_heat_stress" not in result.breakdown
+
+
+def test_weather_without_context_preserves_legacy_threshold_behavior() -> None:
+    sig = _sig(
+        "weather",
+        {"temp_c": 33, "feels_like_c": 35, "humidity_pct": 85, "uv_index": 4, "wmo_code": 1},
+    )
+    result = compute_salience([sig], _time_ctx())
+    assert result.breakdown.get("weather_heat_stress") == 0.4
 
 
 # ── Calendar rules ───────────────────────────────────────────────────────────

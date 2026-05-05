@@ -35,20 +35,24 @@ class TimeContext:
         The block is designed to prevent LLM time hallucination — the LLM is told
         explicitly what day/time it is and forbidden from claiming anything different.
         """
-        hp = self.human_phrasing
-        if not hp:
-            return ""
-        now_str = hp.get("now_user_local", "unknown")
         confidence = self.timezone_confidence
+        hp = self.human_phrasing
         if confidence < 0.6:
             return (
                 "# Time Truth (authoritative)\n\n"
-                f"NOW (server time, user timezone not yet confirmed): {now_str}\n"
-                "- timezone_confidence is LOW. Do NOT volunteer the time or day to the user.\n"
-                "- If asked what time/day it is, say you're not certain of their timezone yet "
-                "and ask them once.\n"
-                "- Never invent a day, date, or hour."
+                f"The user's local time and timezone are NOT yet confirmed "
+                f"(timezone_confidence: {confidence:.2f}).\n"
+                "- You do NOT know what time, day, or date it is for the user.\n"
+                "- Do NOT state, compute, or estimate any local time, day, "
+                "'X hours from now', or morning/evening/weekend framing.\n"
+                "- If the user asks the time or you need it, briefly say you don't yet "
+                "know their timezone and ask once, naturally.\n"
+                "- If they tell you their city, country, or timezone, the system will "
+                "update on the next turn."
             )
+        if not hp:
+            return ""
+        now_str = hp.get("now_user_local", "unknown")
         return (
             "# Time Truth (authoritative)\n\n"
             f"NOW (user's local time): {now_str}\n"

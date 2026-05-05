@@ -7,6 +7,8 @@ from healthclaw.core.crypto import decrypt_secret, encrypt_secret
 from healthclaw.db.session import SessionLocal
 from healthclaw.services.account import (
     AccountService,
+    BotAlreadyBoundError,
+    BotAlreadyClaimedError,
     BotIdentity,
     InvalidBotTokenError,
     InvalidEmailError,
@@ -71,6 +73,30 @@ async def test_account_rejects_bad_bot_token_shape() -> None:
         account = await accounts.get_or_create_by_email("a@b.co")
         with pytest.raises(InvalidBotTokenError):
             await accounts.bind_bot_token(account, "not-a-token")
+
+
+async def test_account_rejects_second_bot_for_same_account(monkeypatch) -> None:
+    await _stub_bot_identity(monkeypatch)
+    settings = get_settings()
+    async with SessionLocal() as session:
+        accounts = AccountService(session, settings)
+        account = await accounts.get_or_create_by_email("single@example.com")
+        await accounts.bind_bot_token(account, "1234567:ABCDEFGHIJKLMNOPQRSTUVWXY")
+        with pytest.raises(BotAlreadyBoundError):
+            await accounts.bind_bot_token(account, "1234567:ZYXWVUTSRQPONMLKJIHGFEDCB")
+
+
+async def test_account_rejects_bot_claimed_by_another_account(monkeypatch) -> None:
+    await _stub_bot_identity(monkeypatch, telegram_id="claimed-bot", username="claimed_bot")
+    settings = get_settings()
+    async with SessionLocal() as session:
+        accounts = AccountService(session, settings)
+        first = await accounts.get_or_create_by_email("first@example.com")
+        second = await accounts.get_or_create_by_email("second@example.com")
+        await accounts.bind_bot_token(first, "1234567:ABCDEFGHIJKLMNOPQRSTUVWXY")
+        await session.flush()
+        with pytest.raises(BotAlreadyClaimedError):
+            await accounts.bind_bot_token(second, "7654321:ABCDEFGHIJKLMNOPQRSTUVWXY")
 
 
 async def test_free_tier_counter_resets_on_period_change() -> None:

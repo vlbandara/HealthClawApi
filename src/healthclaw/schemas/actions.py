@@ -45,6 +45,15 @@ class SetUserTimezonePayload(BaseModel):
     confidence: float = Field(default=0.9, ge=0.0, le=1.0)
 
 
+class SetQuietHoursPayload(BaseModel):
+    """Persist user-confirmed quiet hours / sleep window preferences."""
+
+    quiet_start: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    quiet_end: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    source: Literal["user_stated"] = "user_stated"
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+
+
 class OpenTopicPayload(BaseModel):
     """Open a tracked topic — the agent's suggestion, commitment, or follow-up intent.
 

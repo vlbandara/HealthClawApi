@@ -75,6 +75,7 @@ async def route_heartbeat_job_through_synth(
         from healthclaw.inner.salience import compute_salience
         from healthclaw.inner.speech_gate import SpeechGate
         from healthclaw.inner.synthesizer import InnerSynthesizer
+        from healthclaw.integrations.weather import build_weather_salience_context
 
         time_ctx = build_time_context(user, now=now)
         time_ctx_dict = time_ctx.to_dict()
@@ -96,16 +97,25 @@ async def route_heartbeat_job_through_synth(
         # Load motives
         motives = []
         if settings.motives_enabled:
-            motives = await MotiveService(session).get_active(user.id)
+            motives = await MotiveService(session).get_active_motives(user.id)
 
         # Compute salience — if zero and the job has no strong signal, may suppress
-        salience = compute_salience(signals, time_ctx, motives=motives if motives else None)
+        weather_context = None
+        if any(str(signal.kind) == "weather" for signal in signals):
+            weather_context = await build_weather_salience_context(user, now=now)
+        salience = compute_salience(
+            signals,
+            time_ctx_dict,
+            motives=motives if motives else None,
+            weather_context=weather_context,
+        )
 
         # Create a stub Thought for the synthesizer
         thought = Thought(
             user_id=user.id,
             mode="proactive",
-            salience=salience,
+            salience=salience.score,
+            salience_breakdown=salience.breakdown,
             content_summary=f"heartbeat:{job_kind}",
         )
         session.add(thought)

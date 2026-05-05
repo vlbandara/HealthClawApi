@@ -58,6 +58,19 @@ Run the API and reminder worker together:
 docker compose up --build
 ```
 
+Hosted onboarding is available at `http://localhost:8000/`. For a real Telegram
+end-to-end local simulation, expose the API through an HTTPS tunnel and set
+`PUBLIC_BASE_URL` to that public URL before connecting a bot token. Also set
+`JWT_SECRET`, `MULTI_TENANT_MODE=true`, and a `FERNET_KEY` generated with:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+When `RESEND_API_KEY` is not configured, sign-in links are printed in the API logs.
+Open that link, paste the BotFather token, and Healthclaw registers
+`$PUBLIC_BASE_URL/webhooks/telegram/{account_id}` for the connected bot.
+
 Register the Telegram webhook after the API is reachable from the public internet:
 
 ```bash

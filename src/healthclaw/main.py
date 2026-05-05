@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,10 @@ from healthclaw.core.logging import configure_logging
 from healthclaw.core.observability import configure_observability
 from healthclaw.db.models import ConversationThread, OpenLoop, Ritual, User, new_id
 from healthclaw.db.session import SessionLocal, init_models
+from healthclaw.services.account import PublicBaseUrlConfigError, validate_public_base_url
+from healthclaw.web.onboarding import auth_callback_page, landing_page, onboarding_page
+
+logger = logging.getLogger(__name__)
 
 
 async def _dev_chat() -> HTMLResponse:
@@ -226,6 +231,10 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            validate_public_base_url(settings.public_base_url)
+        except PublicBaseUrlConfigError as exc:
+            logger.warning("Hosted bot onboarding is misconfigured: %s", exc)
         if settings.auto_create_db:
             await init_models()
         yield
@@ -237,6 +246,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     configure_observability(app, settings)
+    app.add_api_route("/", landing_page, methods=["GET"], include_in_schema=False)
+    app.add_api_route(
+        "/auth/callback",
+        auth_callback_page,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route("/onboarding", onboarding_page, methods=["GET"], include_in_schema=False)
     app.include_router(api_router)
     if not settings.is_production:
         app.add_api_route("/dev/chat", _dev_chat, methods=["GET"], include_in_schema=False)

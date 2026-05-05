@@ -11,8 +11,12 @@ from healthclaw.db.models import Account
 from healthclaw.db.session import SessionLocal
 from healthclaw.services.account import (
     AccountService,
+    BotAlreadyBoundError,
+    BotAlreadyClaimedError,
     InvalidBotTokenError,
     InvalidEmailError,
+    PublicBaseUrlConfigError,
+    WebhookRegistrationError,
 )
 from healthclaw.services.auth import (
     AuthConfigError,
@@ -159,6 +163,22 @@ async def bind_bot_token(
         accounts = AccountService(session, settings)
         try:
             identity = await accounts.bind_bot_token(fresh, payload.bot_token)
+        except BotAlreadyBoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
+        except BotAlreadyClaimedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
+        except PublicBaseUrlConfigError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        except WebhookRegistrationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
         except InvalidBotTokenError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
